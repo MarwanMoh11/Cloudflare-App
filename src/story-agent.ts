@@ -123,11 +123,16 @@ DO NOT provide options for future turns.`
         this.isLocked = true;
 
         const s = this.currentState;
-        let winningChoice = "1";
-        let max = -1;
-        for (const [c, count] of Object.entries(s.currentVotes)) {
-            if (count > max) { max = count; winningChoice = c; }
-        }
+        const votes = s.currentVotes || {};
+        const maxVotes = Math.max(...Object.values(votes));
+
+        // Find all options that share the maximum number of votes
+        const candidates = Object.keys(votes).filter(c => votes[c] === maxVotes);
+
+        // If no one voted (max is 0) or we have a tie, pick randomly from candidates
+        const winningChoice = candidates[Math.floor(Math.random() * candidates.length)] || "1";
+
+        this.log("RESOLVING_VOTES", { winningChoice, maxVotes, candidates });
 
         const lastModelMsg = s.messages.filter(m => m.role === "assistant").pop();
         let prompt = `Option ${winningChoice}`;
