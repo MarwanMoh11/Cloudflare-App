@@ -1,16 +1,21 @@
-
 const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
 const wsUrl = `${protocol}//${window.location.host}/agent`;
 
 let socket;
 let reconnectInterval;
+let timerInterval;
+let hasVoted = false;
 
 const chatWindow = document.getElementById("chat-window");
 const statusDot = document.getElementById("status-dot");
 const statusText = document.getElementById("status-text");
 const usersCount = document.getElementById("users-count");
-const controlsArea = document.getElementById("controls");
 const voiceBtn = document.getElementById("voice-btn");
+const controlsArea = document.getElementById("controls");
+const timerBar = document.getElementById("timer-bar");
+const timerProgress = document.getElementById("timer-progress");
+const timerText = document.getElementById("timer-text");
+const phaseLabel = document.getElementById("phase-label");
 
 function connect() {
     console.log(`Connecting to ${wsUrl}...`);
@@ -26,6 +31,7 @@ function connect() {
         statusDot.classList.add("connected");
         statusText.innerText = "Online";
         clearInterval(reconnectInterval);
+        hasVoted = false;
 
         // Reset state for fresh start, then start game
         socket.send(JSON.stringify({ type: "RESET_STATE" }));
@@ -35,30 +41,27 @@ function connect() {
     };
 
     socket.onclose = (event) => {
-        console.log(`WebSocket Closed. Code: ${event.code}, Reason: ${event.reason || 'None'}, WasClean: ${event.wasClean}`);
+        console.log(`WebSocket Closed. Code: ${event.code}`);
         statusDot.classList.remove("connected");
         statusText.innerText = "Disconnected";
+        clearInterval(timerInterval);
         reconnectInterval = setInterval(() => {
             if (socket.readyState === WebSocket.CLOSED) {
-                console.log("Reconnecting...");
                 connect();
             }
-        }, 5000); // Slower reconnect
+        }, 5000);
     };
 
     socket.onerror = (error) => {
-        console.error("WebSocket Error occurred:", error);
+        console.error("WebSocket Error:", error);
     };
 
     socket.onmessage = (event) => {
         const msg = JSON.parse(event.data);
 
-        // Handle standard agents-sdk state update
         if (msg.type === "cf_agent_state") {
             renderState(msg.state);
-        }
-        // Handle legacy custom update if any (backward compatibility during transition)
-        else if (msg.type === "STATE_UPDATE") {
+        } else if (msg.type === "STATE_UPDATE") {
             renderState(msg.data);
         }
     };
@@ -66,59 +69,120 @@ function connect() {
 
 function renderState(state) {
     // Update user count
-    usersCount.innerText = `${state.connectedUsers || state.users || 1} online`;
+    const users = state.connectedUsers || state.users || 1;
+    usersCount.innerText = `${users} online`;
 
     // Render Story Log
     chatWindow.innerHTML = "";
-    // Check for 'messages' (native state) or 'story' (old custom state)
-    const stories = state.messages || state.story || [];
+    const stories = state.messages || [];
 
     stories.forEach(entry => {
-        // Hide system prompts from the UI
+        // Hide system prompts
         if (entry.role === "system") return;
+        // Hide internal user prompts (they're just for AI context)
+        if (entry.role === "user") return;
 
         const div = document.createElement("div");
-        // Ensure role class matches CSS (user/assistant)
-        const role = entry.role === "assistant" ? "model" : entry.role;
-        div.className = `message ${role}`;
+        div.className = "message model";
 
-        div.innerText = entry.content;
+        // Format the content nicely
+        let content = entry.content;
+        // Make options bold
+        content = content.replace(/(\d\.\s*\[[^\]]+\])/g, '<strong>$1</strong>');
+        // Line breaks
+        content = content.replace(/\n/g, '<br>');
+
+        div.innerHTML = content;
         chatWindow.appendChild(div);
     });
+
     chatWindow.scrollTop = chatWindow.scrollHeight;
 
-    // Handle Game Phase
-    // Show controls only if phase is VOTING (case insensitive just in case)
-    if (state.phase === "VOTING" || state.phase === "voting") {
+    // Handle voting UI
+    const isVoting = state.phase === "VOTING";
+    const isNarrating = state.phase === "NARRATING";
+
+    if (isVoting) {
         controlsArea.classList.remove("hidden");
+        phaseLabel.innerText = "⏱️ Voting Phase";
+
+        // Update timer
+        if (state.votingDeadline) {
+            updateTimer(state.votingDeadline);
+        }
+
+        // Update vote counts
+        const votes = state.currentVotes || { "1": 0, "2": 0, "3": 0 };
+        const totalVotes = Object.values(votes).reduce((a, b) => a + b, 0);
+
+        for (let i = 1; i <= 3; i++) {
+            const count = votes[String(i)] || 0;
+            document.getElementById(`votes-${i}`).innerText = `${count} vote${count !== 1 ? 's' : ''}`;
+
+            // Update vote bar
+            const percent = totalVotes > 0 ? (count / totalVotes) * 100 : 0;
+            document.getElementById(`bar-${i}`).style.width = `${percent}%`;
+        }
+
+        // Enable/disable buttons based on vote status
+        const buttons = document.querySelectorAll(".vote-btn");
+        buttons.forEach((btn, i) => {
+            btn.disabled = hasVoted;
+            if (hasVoted && btn.classList.contains("selected")) {
+                btn.style.opacity = "1";
+            }
+        });
+
+    } else if (isNarrating) {
+        phaseLabel.innerText = "✍️ Narrator is writing...";
+        timerProgress.style.width = "100%";
+        timerText.innerText = "...";
+
+        // Disable voting during narration
+        const buttons = document.querySelectorAll(".vote-btn");
+        buttons.forEach(btn => btn.disabled = true);
+
     } else {
         controlsArea.classList.add("hidden");
     }
+}
 
-    // Update Buttons
-    const buttons = document.querySelectorAll("#vote-panel button");
-    const isVoting = state.phase === "VOTING";
+function updateTimer(deadline) {
+    clearInterval(timerInterval);
 
-    buttons.forEach(btn => {
-        btn.disabled = !isVoting;
-        if (isVoting) {
-            btn.style.opacity = "1";
-        } else {
-            btn.style.opacity = "0.5";
+    const update = () => {
+        const now = Date.now();
+        const remaining = Math.max(0, deadline - now);
+        const seconds = Math.ceil(remaining / 1000);
+        const progress = (remaining / 20000) * 100; // 20 second total
+
+        timerText.innerText = `${seconds}s`;
+        timerProgress.style.width = `${progress}%`;
+
+        if (remaining <= 0) {
+            clearInterval(timerInterval);
+            timerText.innerText = "Tallying...";
         }
-    });
+    };
 
-    // Show votes on buttons if available
-    if (state.votes) {
-        document.getElementById("btn-1").innerText = `Option 1 (${state.votes['1'] || 0})`;
-        document.getElementById("btn-2").innerText = `Option 2 (${state.votes['2'] || 0})`;
-        document.getElementById("btn-3").innerText = `Option 3 (${state.votes['3'] || 0})`;
-    }
+    update();
+    timerInterval = setInterval(update, 100);
 }
 
 function sendVote(choice) {
+    if (hasVoted) return;
+
     if (socket && socket.readyState === WebSocket.OPEN) {
         socket.send(JSON.stringify({ type: "VOTE", choice }));
+        hasVoted = true;
+
+        // Visual feedback
+        document.querySelectorAll(".vote-btn").forEach((btn, i) => {
+            if (String(i + 1) === choice) {
+                btn.classList.add("selected");
+            }
+            btn.disabled = true;
+        });
     }
 }
 
@@ -138,27 +202,29 @@ if ('webkitSpeechRecognition' in window) {
 
     recognition.onstart = () => {
         voiceBtn.classList.add("recording");
-        voiceBtn.innerText = "Listening...";
+        voiceBtn.innerText = "🎙️ Listening...";
     };
 
     recognition.onend = () => {
         voiceBtn.classList.remove("recording");
-        voiceBtn.innerText = "Tap to Speak";
+        voiceBtn.innerText = "🎤 Tap to Speak";
     };
 
     recognition.onresult = (event) => {
         const transcript = event.results[0][0].transcript.toLowerCase();
         console.log("Heard:", transcript);
 
-        // Simple command parsing
-        if (transcript.includes("one") || transcript.includes("1")) sendVote("1");
-        else if (transcript.includes("two") || transcript.includes("2")) sendVote("2");
-        else if (transcript.includes("three") || transcript.includes("3")) sendVote("3");
-        else alert(`Heard: "${transcript}". Say "Option One", "Two", or "Three"`);
+        if (transcript.includes("one") || transcript.includes("1") || transcript.includes("first")) {
+            sendVote("1");
+        } else if (transcript.includes("two") || transcript.includes("2") || transcript.includes("second")) {
+            sendVote("2");
+        } else if (transcript.includes("three") || transcript.includes("3") || transcript.includes("third")) {
+            sendVote("3");
+        }
     };
 } else {
     voiceBtn.style.display = "none";
 }
 
-// Init
+// Initialize
 connect();
