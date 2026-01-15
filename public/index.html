@@ -188,6 +188,116 @@
       min-height: 400px;
     }
 
+    .stats-bar {
+      display: flex;
+      gap: 1rem;
+      margin-bottom: 1rem;
+      background: var(--glass);
+      padding: 0.75rem 1rem;
+      border-radius: 12px;
+      border: 1px solid var(--glass-border);
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .stat-item {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.875rem;
+      font-weight: 600;
+    }
+
+    .hp-container {
+      flex: 1;
+      min-width: 150px;
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    .hp-track {
+      flex: 1;
+      height: 8px;
+      background: rgba(255, 255, 255, 0.1);
+      border-radius: 4px;
+      overflow: hidden;
+    }
+
+    .hp-fill {
+      height: 100%;
+      background: linear-gradient(90deg, #ef4444, #f87171);
+      width: 100%;
+      transition: width 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    .quest-box {
+      background: rgba(139, 92, 246, 0.1);
+      border: 1px solid rgba(139, 92, 246, 0.2);
+      padding: 0.5rem 0.75rem;
+      border-radius: 8px;
+      font-size: 0.8rem;
+      color: var(--primary);
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .inventory-bar {
+      font-size: 0.75rem;
+      color: rgba(255, 255, 255, 0.5);
+      display: flex;
+      gap: 0.5rem;
+      overflow-x: auto;
+      padding-bottom: 0.25rem;
+    }
+
+    .inv-item {
+      background: rgba(255, 255, 255, 0.05);
+      padding: 2px 8px;
+      border-radius: 4px;
+      border: 1px solid var(--glass-border);
+      white-space: nowrap;
+    }
+
+    .game-over-overlay,
+    .victory-overlay {
+      position: absolute;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.95);
+      backdrop-filter: blur(8px);
+      z-index: 100;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      border-radius: 16px;
+      animation: fadeIn 0.5s ease;
+    }
+
+    @keyframes fadeIn {
+      from {
+        opacity: 0;
+      }
+
+      to {
+        opacity: 1;
+      }
+    }
+
+    .game-over-overlay h2 {
+      color: #ef4444;
+      font-size: 3rem;
+      margin-bottom: 1rem;
+    }
+
+    .victory-overlay h2 {
+      color: var(--success);
+      font-size: 3rem;
+      margin-bottom: 1rem;
+    }
+
     .room-selector {
       display: flex;
       flex-direction: column;
@@ -561,6 +671,22 @@
 
     <div id="chat-window">
       <!-- Will be populated by JS -->
+    </div>
+
+    <!-- DnD Stats Bar -->
+    <div id="dnd-stats" class="stats-bar hidden">
+      <div class="hp-container">
+        <span class="stat-item">❤️ <span id="hp-text">100/100</span></span>
+        <div class="hp-track">
+          <div id="hp-fill" class="hp-fill" style="width: 100%;"></div>
+        </div>
+      </div>
+      <div class="stat-item">💰 <span id="gold-text">0</span> gold</div>
+      <div class="stat-item">⚔️ Level <span id="lvl-text">1</span></div>
+      <div id="quest-label" class="quest-box">QUEST: Awaiting adventure...</div>
+    </div>
+    <div id="inventory-container" class="inventory-bar hidden">
+      <!-- Items go here -->
     </div>
 
     <div id="controls" class="hidden">

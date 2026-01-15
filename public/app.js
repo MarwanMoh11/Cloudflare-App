@@ -20,6 +20,15 @@ const phaseLabel = document.getElementById("phase-label");
 const headerRoomInfo = document.getElementById("header-room-info");
 const currentRoomBadge = document.getElementById("current-room-badge");
 
+// DnD Elements
+const dndStats = document.getElementById("dnd-stats");
+const hpText = document.getElementById("hp-text");
+const hpFill = document.getElementById("hp-fill");
+const goldText = document.getElementById("gold-text");
+const lvlText = document.getElementById("lvl-text");
+const questLabel = document.getElementById("quest-label");
+const inventoryContainer = document.getElementById("inventory-container");
+
 function addLog(source, data) {
     const entry = { clientTime: new Date().toISOString(), source, data };
     debugLogs.push(entry);
@@ -62,6 +71,8 @@ function renderRoomSelector() {
     `;
     controlsArea.classList.add("hidden");
     headerRoomInfo.classList.add("hidden");
+    dndStats.classList.add("hidden");
+    inventoryContainer.classList.add("hidden");
 }
 
 function handleJoin() {
@@ -159,7 +170,23 @@ function renderState(state) {
             </div>
         `;
         controlsArea.classList.add("hidden");
+        dndStats.classList.add("hidden");
+        inventoryContainer.classList.add("hidden");
         return;
+    }
+
+    // Render Stats
+    if (state.partyStats) {
+        dndStats.classList.remove("hidden");
+        inventoryContainer.classList.remove("hidden");
+        hpText.innerText = `${state.partyStats.hp}/${state.partyStats.maxHp}`;
+        hpFill.style.width = `${(state.partyStats.hp / state.partyStats.maxHp) * 100}%`;
+        goldText.innerText = state.partyStats.gold;
+        lvlText.innerText = state.partyStats.level;
+        questLabel.innerText = `QUEST: ${state.partyStats.quest}`;
+
+        // Render Inventory
+        inventoryContainer.innerHTML = (state.inventory || []).map(item => `<span class="inv-item">🎒 ${item}</span>`).join("");
     }
 
     // Render Chat
@@ -175,6 +202,10 @@ function renderState(state) {
         let content = entry.content;
 
         if (entry.role === "assistant") {
+            // Remove DnD Tags from display
+            content = content.replace(/\[\[.*?\]\]/g, "");
+            content = content.replace(/QUEST:\s*.*?\n/i, "");
+
             // Flexible regex to find options with or without brackets
             // Matches "1. Text" or "1. [Text]"
             const optionMatches = [...content.matchAll(/^(\d)\.\s*(?:\[(.*?)\]|(.*?))(?:\r?\n|$)/gm)];
@@ -197,6 +228,31 @@ function renderState(state) {
         chatWindow.appendChild(div);
     });
     chatWindow.scrollTop = chatWindow.scrollHeight;
+
+    // Overlays
+    if (state.phase === "GAMEOVER") {
+        chatWindow.innerHTML += `
+            <div class="game-over-overlay">
+                <h2>GAME OVER</h2>
+                <p>The party has fallen. Darkness consumes all.</p>
+                <button class="secondary-btn" style="margin-top: 1rem; width: auto;" onclick="location.reload()">Start New Quest</button>
+            </div>
+        `;
+        controlsArea.classList.add("hidden");
+        return;
+    }
+
+    if (state.phase === "VICTORY") {
+        chatWindow.innerHTML += `
+            <div class="victory-overlay">
+                <h2>VICTORY!</h2>
+                <p>The quest is complete. Songs will be sung of your deeds!</p>
+                <button class="primary-btn" style="margin-top: 1rem; width: auto;" onclick="location.reload()">New Adventure</button>
+            </div>
+        `;
+        controlsArea.classList.add("hidden");
+        return;
+    }
 
     // Controls
     controlsArea.classList.remove("hidden");

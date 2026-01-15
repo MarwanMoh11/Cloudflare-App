@@ -1,21 +1,31 @@
 
 import { Agent } from "agents-sdk";
 
+interface PartyStats {
+    hp: number;
+    maxHp: number;
+    gold: number;
+    level: number;
+    quest: string;
+}
+
 interface StoryState {
     messages: { role: "system" | "user" | "assistant"; content: string }[];
-    phase: "LOBBY" | "VOTING" | "NARRATING";
+    phase: "LOBBY" | "VOTING" | "NARRATING" | "GAMEOVER" | "VICTORY";
     currentVotes: Record<string, number>;
     connectedUsers: number;
     votingDeadline?: number;
     votedUsers: string[];
     roundNumber: number;
+    partyStats: PartyStats;
+    inventory: string[];
 }
 
 interface Env {
     AI: any;
 }
 
-const VOTING_DURATION_MS = 20000;
+const VOTING_DURATION_MS = 25000;
 
 export class StoryAgent extends Agent<Env, StoryState> {
     private isLocked = false;
@@ -29,28 +39,38 @@ export class StoryAgent extends Agent<Env, StoryState> {
             messages: [
                 {
                     role: "system",
-                    content: `You are an expert, visceral storyteller and narrator. 
-Your goal is to immerse players in a high-stakes, atmospheric adventure where every choice has weight.
+                    content: `You are an expert Dungeon Master for a text-based DnD game. 
+You manage an immersive, high-stakes adventure with persistent mechanics.
 
-NARRATION STYLE:
-- Use vivid sensory details (smells, sounds, tactile sensations).
-- Maintain a tone of dramatic tension and cinematic mystery.
-- Focus on the immediate, visceral consequences of actions.
-- Write one rich, evocative paragraph (75-120 words).
+GM ENGINE RULES:
+1. NARRATION: Write one rich, visceral paragraph (80-130 words).
+2. STAT TAGS: You MUST use tags to affect the party. 
+   - Damage: [[HP-10]]
+   - Healing: [[HP+15]]
+   - Loot: [[GOLD+50]]
+   - Items: [[ITEM+Rusty Key]]
+   - Final Boss/Win: [[VICTORY]]
+   - Death: If HP hits 0, the game engine handles it.
+3. CHOICES: End with exactly 3 numbered options.
+4. VARIETY: Offer 1 Combat/Risk, 1 Stealth/Social, 1 Creative/Investigation choice.
 
-STRICT RULES:
-1. End EXCLUSIVELY with a numbered list of exactly 3 distinct choices.
-2. Choices must offer clear variety: one cautious/observational, one bold/aggressive, and one creative/lateral.
-3. Be descriptive in the choice text (e.g., 1. [Crawl toward the flickering torchlight]).
-4. NEVER describe the player's internal thoughts or future reactions. 
-5. NO preamble. Start the narration immediately.`
+QUEST: You set the quest in the first turn. Each turn must progress the party closer to the goal or present a meaningful setback.
+Tone: Cinematic, dark fantasy, high stakes.`
                 }
             ],
             phase: "LOBBY",
             currentVotes: { "1": 0, "2": 0, "3": 0 },
             connectedUsers: 0,
             votedUsers: [],
-            roundNumber: 0
+            roundNumber: 0,
+            partyStats: {
+                hp: 100,
+                maxHp: 100,
+                gold: 0,
+                level: 1,
+                quest: "Awaiting adventure..."
+            },
+            inventory: []
         };
     }
 
@@ -142,12 +162,56 @@ STRICT RULES:
         await this.startRound(prompt);
     }
 
+    private parseStateTags(text: string, currentState: StoryState): StoryState {
+        let s = { ...currentState };
+        let stats = { ...s.partyStats };
+        let inv = [...s.inventory];
+
+        // HP: [[HP-10]] or [[HP+5]]
+        const hpMatches = text.matchAll(/\[\[HP([+-]\d+)\]\]/g);
+        for (const match of hpMatches) {
+            stats.hp = Math.min(stats.maxHp, Math.max(0, stats.hp + parseInt(match[1])));
+        }
+
+        // Gold: [[GOLD+50]]
+        const goldMatches = text.matchAll(/\[\[GOLD([+-]\d+)\]\]/g);
+        for (const match of goldMatches) {
+            stats.gold = Math.max(0, stats.gold + parseInt(match[1]));
+        }
+
+        // Item: [[ITEM\+(.*?)\]\]
+        const itemMatches = text.matchAll(/\[\[ITEM\+(.*?)\]\]/g);
+        for (const match of itemMatches) {
+            const item = match[1].trim();
+            if (item && !inv.includes(item)) inv.push(item);
+        }
+
+        // Victory/Quest
+        if (text.includes("[[VICTORY]]")) s.phase = "VICTORY";
+
+        // Initial Quest Setup (if round 1 and AI sets one)
+        if (s.roundNumber === 1 && stats.quest === "Awaiting adventure...") {
+            const questMatch = text.match(/QUEST:\s*(.*?)(?:\n|$)/i);
+            if (questMatch) stats.quest = questMatch[1].trim();
+        }
+
+        if (stats.hp <= 0) s.phase = "GAMEOVER";
+
+        // Level up every 5 rounds
+        if (s.roundNumber > 0 && s.roundNumber % 5 === 0 && s.phase === "VOTING") {
+            stats.level += 1;
+            stats.maxHp += 20;
+            stats.hp = stats.maxHp; // Full heal on level up
+        }
+
+        return { ...s, partyStats: stats, inventory: inv };
+    }
+
     private async startRound(prompt: string | null) {
         this.isLocked = true;
         const s = this.currentState;
         const nextRound = s.roundNumber + 1;
 
-        // Cleanup history: Remove the options from past assistant messages
         const cleanedHistory = s.messages.map(m => {
             if (m.role === "assistant") {
                 const narrationOnly = m.content.split(/\n\d\./)[0].trim();
@@ -157,15 +221,12 @@ STRICT RULES:
         });
 
         const newMessagesForState = [...s.messages];
-        if (prompt) {
-            newMessagesForState.push({ role: "user", content: `Selection: ${prompt}` });
-        } else {
-            newMessagesForState.push({ role: "user", content: "Adventure started." });
-        }
+        if (prompt) newMessagesForState.push({ role: "user", content: `Selection: ${prompt}` });
+        else newMessagesForState.push({ role: "user", content: "Adventure started." });
 
         const aiPrompt = prompt
-            ? `The players chose: "${prompt}". Narration must reflect the visceral impact of this choice and the immediate shift in the environment. Describe the unfolding scene and present 3 new paths.`
-            : "Begin a new mystery. Set an atmospheric, compelling stage with sensory richness and present 3 starting paths.";
+            ? `The players chose: "${prompt}". Narration must reflect the visceral impact. PARTY HP: ${s.partyStats.hp}/${s.partyStats.maxHp}. GOLD: ${s.partyStats.gold}. LEVEL: ${s.partyStats.level}. Use tags like [[HP-10]] if they fail or get hurt, and [[GOLD+X]] for rewards.`
+            : "Begin the epic quest. Start with 'QUEST: [Objective]'. Describe the opening scene. HP: 100/100.";
 
         this.setState({
             ...s,
@@ -184,17 +245,19 @@ STRICT RULES:
                 messages: messagesForAI
             });
 
-            const story = resp.response;
+            let story = resp.response;
+            let finalState = this.parseStateTags(story, this.currentState);
+
             const deadline = Date.now() + VOTING_DURATION_MS;
             await this.ctx.storage.setAlarm(deadline);
 
             this.setState({
-                ...this.state,
-                messages: [...this.state.messages, { role: "assistant", content: story }],
-                phase: "VOTING",
+                ...finalState,
+                messages: [...finalState.messages, { role: "assistant", content: story }],
+                phase: finalState.phase === "NARRATING" ? "VOTING" : finalState.phase,
                 votingDeadline: deadline
             });
-            this.log("ROUND_READY", { round: nextRound });
+            this.log("ROUND_READY", { round: nextRound, stats: finalState.partyStats });
         } catch (e) {
             this.log("AI_ERROR", { error: String(e) });
         } finally {
