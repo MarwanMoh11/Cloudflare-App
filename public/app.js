@@ -11,28 +11,17 @@ const statusText = document.getElementById("status-text");
 const usersCount = document.getElementById("users-count");
 const voiceBtn = document.getElementById("voice-btn");
 
-function logToChat(msg, type = "system") {
-    console.log(msg);
-    const div = document.createElement("div");
-    div.className = `message ${type}`;
-    div.innerText = `[DEBUG] ${msg}`; // debug prefix
-    div.style.fontFamily = "monospace";
-    div.style.fontSize = "0.75rem";
-    chatWindow.appendChild(div);
-    chatWindow.scrollTop = chatWindow.scrollHeight;
-}
-
 function connect() {
-    logToChat(`Connecting to ${wsUrl}...`);
+    console.log(`Connecting to ${wsUrl}...`);
     try {
         socket = new WebSocket(wsUrl);
     } catch (e) {
-        logToChat(`Error creating WebSocket: ${e.message}`, "system");
+        console.error("Error creating WebSocket:", e);
         return;
     }
 
     socket.onopen = () => {
-        logToChat("WebSocket Open!", "system");
+        console.log("WebSocket Open!");
         statusDot.classList.add("connected");
         statusText.innerText = "Online";
         clearInterval(reconnectInterval);
@@ -42,19 +31,19 @@ function connect() {
     };
 
     socket.onclose = (event) => {
-        logToChat(`WebSocket Closed. Code: ${event.code}, Reason: ${event.reason || 'None'}, WasClean: ${event.wasClean}`, "system");
+        console.log(`WebSocket Closed. Code: ${event.code}, Reason: ${event.reason || 'None'}, WasClean: ${event.wasClean}`);
         statusDot.classList.remove("connected");
         statusText.innerText = "Disconnected";
         reconnectInterval = setInterval(() => {
             if (socket.readyState === WebSocket.CLOSED) {
-                logToChat("Reconnecting...", "system");
+                console.log("Reconnecting...");
                 connect();
             }
         }, 5000); // Slower reconnect
     };
 
     socket.onerror = (error) => {
-        logToChat("WebSocket Error occurred (check console for details)", "system");
+        console.error("WebSocket Error occurred:", error);
     };
 
     socket.onmessage = (event) => {
@@ -62,7 +51,7 @@ function connect() {
         if (msg.type === "STATE_UPDATE") {
             renderState(msg.data);
         } else {
-            logToChat(`Received unknown message: ${JSON.stringify(msg)}`);
+            console.log(`Received unknown message: ${JSON.stringify(msg)}`);
         }
     };
 }
@@ -74,6 +63,9 @@ function renderState(state) {
     // Update Chat
     chatWindow.innerHTML = "";
     state.messages.forEach(msg => {
+        // Hide system prompts from the UI
+        if (msg.role === "system") return;
+
         const div = document.createElement("div");
         div.className = `message ${msg.role}`;
         // Simple markdown-ish parse for bold

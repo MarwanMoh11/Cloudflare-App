@@ -39,16 +39,9 @@ export class StoryAgent extends Agent<Env, StoryState> {
 
     constructor(state: DurableObjectState, env: Env) {
         super(state, env);
-        console.log("[StoryAgent] Constructor called");
-    }
-
-    async fetch(request: Request<unknown, CfProperties<unknown>>) {
-        console.log(`[StoryAgent] fetch called: ${request.url}`);
-        return super.fetch(request);
     }
 
     async onConnect(connection: WebSocket) {
-        console.log("[StoryAgent] onConnect called");
         // Initialize state if needed
         if (!this.state) {
             this.setState(this.currentState);

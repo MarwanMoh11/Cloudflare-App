@@ -5,8 +5,6 @@ import { routeAgentRequest } from "agents-sdk";
 export default {
     async fetch(request: Request, env: any) {
 
-        console.log(`[Worker] Incoming request: ${request.method} ${request.url}`);
-
         // Attempt to route to an Agent if the URL matches standard agent patterns
         // OR manually rewrite our /agent URL to what routeAgentRequest expects if needed.
         // However, routeAgentRequest usually expects /parties/:namespace/:id or /agents/:namespace/:id
@@ -23,7 +21,6 @@ export default {
                 const newRequest = new Request(request);
                 newRequest.headers.set("x-partykit-room", "global-story-room");
 
-                console.log(`[Worker] Manually routing /agent to global-story-room with injected headers`);
                 return await stub.fetch(newRequest);
             } catch (e: any) {
                 console.error("[Worker] Error connecting to StoryAgent:", e);
