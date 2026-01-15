@@ -164,15 +164,31 @@ function renderState(state) {
 
     // Render Chat
     chatWindow.innerHTML = "";
-    (state.messages || []).forEach(entry => {
+    let extractedOptions = [];
+
+    (state.messages || []).forEach((entry, idx) => {
         if (entry.role === "system") return;
+
         const div = document.createElement("div");
         div.className = `message ${entry.role === "assistant" ? "model" : "user"}`;
+
         let content = entry.content;
+
         if (entry.role === "assistant") {
-            content = content.replace(/(\d\.\s*\[[^\]]+\])/g, '<strong>$1</strong>');
+            // Find options using regex
+            const optionMatches = [...content.matchAll(/(\d)\.\s*\[([^\]]+)\]/g)];
+            if (optionMatches.length > 0) {
+                // If it's the last assistant message and we are in VOTING, extract them
+                const isLatest = idx === (state.messages || []).length - 1;
+                if (isLatest && state.phase === "VOTING") {
+                    extractedOptions = optionMatches.map(m => ({ id: m[1], text: m[2] }));
+                }
+                // Strip options from the displayed content
+                content = content.split(/\n\d\./)[0].trim();
+            }
             content = content.replace(/\n/g, '<br>');
         }
+
         div.innerHTML = content;
         chatWindow.appendChild(div);
     });
@@ -191,6 +207,14 @@ function renderState(state) {
         for (let i = 1; i <= 3; i++) {
             const count = votes[String(i)] || 0;
             const btn = document.getElementById(`btn-${i}`);
+            const label = document.getElementById(`label-${i}`);
+
+            // Set dynamic label if found
+            const opt = extractedOptions.find(o => o.id == i);
+            if (label) {
+                label.innerText = opt ? opt.text : `Option ${i}`;
+            }
+
             document.getElementById(`votes-${i}`).innerText = `${count} vote${count !== 1 ? 's' : ''}`;
             document.getElementById(`bar-${i}`).style.width = `${total > 0 ? (count / total) * 100 : 0}%`;
             btn.disabled = hasVoted;
