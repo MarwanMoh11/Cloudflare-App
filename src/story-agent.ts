@@ -9,7 +9,6 @@ interface StoryState {
     votingDeadline?: number;
     votedUsers: string[];
     roundNumber: number;
-    isProcessing: boolean; // Lock to prevent concurrent processing
 }
 
 interface Env {
@@ -19,32 +18,40 @@ interface Env {
 const VOTING_DURATION_MS = 20000;
 
 export class StoryAgent extends Agent<Env, StoryState> {
+    // In-memory lock (Durable Objects are single-threaded, so this is safe)
+    private isLocked = false;
 
     get currentState(): StoryState {
         return this.state || this.getDefaultState();
     }
 
-    getDefaultState(): StoryState {
+    private getDefaultState(): StoryState {
         return {
             messages: [
                 {
                     role: "system",
                     content: `You are the Dungeon Master for a collaborative interactive fiction game. 
-Your goal is to narrate a compelling story based on user votes. 
-Keep responses concise (under 100 words) and end with exactly 3 distinct action options.
-Format options EXACTLY like this:
-1. [First action option]
-2. [Second action option]
-3. [Third action option]
-Never mention voting, options being chosen, players, or game mechanics. Just narrate naturally as if telling a story.`
+Your goal is to narrate the CURRENT segment of a story based on player choices.
+
+CRITICAL CONSTRAINTS:
+1. ONLY write ONE paragraph (max 60 words).
+2. ONLY provide EXACTLY 3 numbered options at the end.
+3. NEVER continue the story beyond the current turn.
+4. NEVER summarize or repeat past turns.
+5. NEVER mention game mechanics, dice, or voting.
+6. Format options exactly as:
+   1. [Option 1]
+   2. [Option 2]
+   3. [Option 3]
+
+Stay in character as a mysterious and immersive narrator.`
                 }
             ],
             phase: "LOBBY",
             currentVotes: { "1": 0, "2": 0, "3": 0 },
             connectedUsers: 0,
             votedUsers: [],
-            roundNumber: 0,
-            isProcessing: false
+            roundNumber: 0
         };
     }
 
@@ -52,183 +59,82 @@ Never mention voting, options being chosen, players, or game mechanics. Just nar
         super(state, env);
     }
 
-    private log(action: string, details: Record<string, any> = {}) {
+    private log(action: string, details: any = {}) {
         const s = this.currentState;
-        console.log(JSON.stringify({
-            timestamp: new Date().toISOString(),
-            action,
-            state: {
-                phase: s.phase,
-                roundNumber: s.roundNumber,
-                isProcessing: s.isProcessing,
-                connectedUsers: s.connectedUsers,
-                votedUsersCount: s.votedUsers.length,
-                messagesCount: s.messages.length
-            },
-            ...details
-        }));
+        console.log(`[STORY_LOG] ${action} | Phase: ${s.phase} | Round: ${s.roundNumber} | Users: ${s.votedUsers.length}/${s.connectedUsers} | Details: ${JSON.stringify(details)}`);
     }
 
     async onConnect(connection: any) {
-        this.log("ON_CONNECT", { connectionId: connection.id });
-
         if (!this.state) {
             this.setState(this.getDefaultState());
-            this.log("INITIALIZED_DEFAULT_STATE");
         }
-
-        this.setState({
-            ...this.currentState,
-            connectedUsers: this.currentState.connectedUsers + 1
-        });
-        this.log("USER_CONNECTED");
+        const s = this.currentState;
+        this.setState({ ...s, connectedUsers: s.connectedUsers + 1 });
+        this.log("USER_CONNECTED", { id: connection.id });
     }
 
-    async onClose(connection: any, code: number, reason: string, wasClean: boolean) {
-        this.log("ON_CLOSE", { code, reason });
+    async onClose(connection: any) {
         const s = this.currentState;
         if (s.connectedUsers > 0) {
             this.setState({ ...s, connectedUsers: s.connectedUsers - 1 });
         }
+        this.log("USER_DISCONNECTED", { id: connection.id });
     }
 
     async onMessage(connection: any, message: string | ArrayBuffer) {
         const msgStr = typeof message === "string" ? message : new TextDecoder().decode(message);
-
         let data: any;
         try {
             data = JSON.parse(msgStr);
-        } catch (e) {
-            this.log("PARSE_ERROR", { error: String(e) });
-            return;
-        }
+        } catch (e) { return; }
 
         const s = this.currentState;
-        const connectionId = connection.id || `user-${Date.now()}`;
+        const connectionId = connection.id || "unknown";
 
-        this.log("MESSAGE_RECEIVED", { type: data.type, connectionId });
+        if (data.type === "START_GAME") {
+            if (s.phase === "LOBBY" && !this.isLocked) {
+                this.log("ACTION: START_GAME");
+                await this.startRound(null);
+            }
+        } else if (data.type === "VOTE") {
+            if (s.phase === "VOTING" && !s.votedUsers.includes(connectionId)) {
+                this.log("ACTION: VOTE", { choice: data.choice, user: connectionId });
 
-        switch (data.type) {
-            case "START_GAME":
-                if (s.phase !== "LOBBY") {
-                    this.log("START_GAME_IGNORED", { reason: "not in LOBBY", currentPhase: s.phase });
-                    return;
+                // Update state for the vote
+                const updatedVotes = { ...s.currentVotes };
+                updatedVotes[data.choice] = (updatedVotes[data.choice] || 0) + 1;
+                const updatedVoters = [...s.votedUsers, connectionId];
+
+                this.setState({ ...s, currentVotes: updatedVotes, votedUsers: updatedVoters });
+
+                // Check for early resolution
+                if (updatedVoters.length >= s.connectedUsers && !this.isLocked) {
+                    this.log("EARLY_RESOLUTION_TRIGGERED");
+                    await this.ctx.storage.deleteAlarm();
+                    await this.resolveVotes();
                 }
-                if (s.isProcessing) {
-                    this.log("START_GAME_IGNORED", { reason: "already processing" });
-                    return;
-                }
-                this.log("START_GAME_ACCEPTED");
-                await this.startNewRound(null);
-                break;
-
-            case "VOTE":
-                if (s.phase !== "VOTING") {
-                    this.log("VOTE_IGNORED", { reason: "not in VOTING", currentPhase: s.phase });
-                    return;
-                }
-                if (s.isProcessing) {
-                    this.log("VOTE_IGNORED", { reason: "already processing" });
-                    return;
-                }
-                if (s.votedUsers.includes(connectionId)) {
-                    this.log("VOTE_IGNORED", { reason: "already voted", connectionId });
-                    return;
-                }
-
-                const choice = data.choice;
-                const newVotes = { ...s.currentVotes };
-                newVotes[choice] = (newVotes[choice] || 0) + 1;
-                const newVotedUsers = [...s.votedUsers, connectionId];
-
-                this.setState({
-                    ...s,
-                    currentVotes: newVotes,
-                    votedUsers: newVotedUsers
-                });
-
-                this.log("VOTE_RECORDED", {
-                    choice,
-                    totalVoters: newVotedUsers.length,
-                    connectedUsers: s.connectedUsers
-                });
-
-                // Check if all users have voted
-                if (newVotedUsers.length >= s.connectedUsers && s.connectedUsers > 0) {
-                    this.log("ALL_USERS_VOTED_ATTEMPTING_EARLY_RESOLVE");
-
-                    // Cancel alarm first
-                    try {
-                        await this.ctx.storage.deleteAlarm();
-                        this.log("ALARM_DELETED_SUCCESSFULLY");
-                    } catch (e) {
-                        this.log("ALARM_DELETE_FAILED", { error: String(e) });
-                    }
-
-                    await this.resolveAndContinue(s.roundNumber);
-                }
-                break;
+            }
         }
     }
 
     async alarm() {
-        const s = this.currentState;
-        this.log("ALARM_FIRED", {
-            expectedPhase: "VOTING",
-            actualPhase: s.phase,
-            roundNumber: s.roundNumber,
-            isProcessing: s.isProcessing
-        });
-
-        if (s.phase !== "VOTING") {
-            this.log("ALARM_IGNORED", { reason: "not in VOTING phase" });
-            return;
+        this.log("ALARM_FIRED");
+        if (this.currentState.phase === "VOTING" && !this.isLocked) {
+            await this.resolveVotes();
+        } else {
+            this.log("ALARM_SKIPPED", { phase: this.currentState.phase, isLocked: this.isLocked });
         }
-
-        if (s.isProcessing) {
-            this.log("ALARM_IGNORED", { reason: "already processing" });
-            return;
-        }
-
-        this.log("ALARM_ACCEPTED_RESOLVING");
-        await this.resolveAndContinue(s.roundNumber);
     }
 
-    async resolveAndContinue(expectedRound: number) {
+    private async resolveVotes() {
+        if (this.isLocked) return;
+        this.isLocked = true;
+
         const s = this.currentState;
+        this.log("RESOLVING_VOTES", { votes: s.currentVotes });
 
-        this.log("RESOLVE_ATTEMPT", {
-            expectedRound,
-            currentRound: s.roundNumber,
-            phase: s.phase,
-            isProcessing: s.isProcessing
-        });
-
-        // Guard: Check round number
-        if (s.roundNumber !== expectedRound) {
-            this.log("RESOLVE_ABORTED", { reason: "round mismatch" });
-            return;
-        }
-
-        // Guard: Check phase
-        if (s.phase !== "VOTING") {
-            this.log("RESOLVE_ABORTED", { reason: "not in VOTING phase" });
-            return;
-        }
-
-        // Guard: Check if already processing
-        if (s.isProcessing) {
-            this.log("RESOLVE_ABORTED", { reason: "already processing" });
-            return;
-        }
-
-        // Set processing lock IMMEDIATELY
-        this.setState({ ...s, isProcessing: true });
-        this.log("PROCESSING_LOCK_SET");
-
-        // Find winner
         let winningChoice = "1";
-        let maxVotes = 0;
+        let maxVotes = -1;
         for (const [choice, count] of Object.entries(s.currentVotes)) {
             if (count > maxVotes) {
                 maxVotes = count;
@@ -236,112 +142,83 @@ Never mention voting, options being chosen, players, or game mechanics. Just nar
             }
         }
 
-        this.log("WINNER_DETERMINED", { winningChoice, votes: maxVotes });
-
-        // Extract action text
-        const lastMessage = s.messages[s.messages.length - 1];
-        let chosenAction = `Option ${winningChoice}`;
-
-        if (lastMessage?.role === "assistant") {
-            const regex = new RegExp(`${winningChoice}\\.\\s*\\[([^\\]]+)\\]`);
-            const match = lastMessage.content.match(regex);
-            if (match) {
-                chosenAction = match[1];
-                this.log("ACTION_EXTRACTED", { chosenAction });
-            }
+        const lastAssistantMsg = s.messages.filter(m => m.role === "assistant").pop();
+        let actionText = `Option ${winningChoice}`;
+        if (lastAssistantMsg) {
+            const match = lastAssistantMsg.content.match(new RegExp(`${winningChoice}\\.\\s*\\[([^\\]]+)\\]`));
+            if (match) actionText = match[1];
         }
 
-        await this.startNewRound(chosenAction);
+        this.log("WINNER_CHOSEN", { choice: winningChoice, text: actionText });
+        await this.startRound(actionText);
     }
 
-    async startNewRound(chosenAction: string | null) {
+    private async startRound(prompt: string | null) {
+        // Double check lock but this is private and called only from resolve or start
+        this.isLocked = true;
+
+        // Fresh state snapshot
         const s = this.currentState;
-        const newRoundNumber = s.roundNumber + 1;
+        const nextRound = s.roundNumber + 1;
 
-        this.log("ROUND_STARTING", {
-            newRoundNumber,
-            chosenAction: chosenAction || "INITIAL",
-            previousPhase: s.phase
-        });
+        this.log("NARRATING_START", { round: nextRound, prompt });
 
-        // Transition to NARRATING with new round number
+        // Update state to NARRATING immediately
         this.setState({
             ...s,
             phase: "NARRATING",
-            roundNumber: newRoundNumber,
+            roundNumber: nextRound,
             currentVotes: { "1": 0, "2": 0, "3": 0 },
-            votedUsers: [],
-            isProcessing: true // Keep processing lock
+            votedUsers: []
         });
 
-        this.log("PHASE_CHANGED_TO_NARRATING");
-
-        // Build AI messages
-        let aiMessages = [...s.messages];
-
-        if (chosenAction) {
-            aiMessages.push({ role: "user" as const, content: chosenAction });
+        // Prepare History for AI
+        const history = [...s.messages];
+        if (prompt) {
+            history.push({ role: "user", content: `ACTION: ${prompt}` });
         } else {
-            aiMessages.push({
-                role: "user" as const,
-                content: "Begin the adventure. Describe a mysterious setting to start our story."
-            });
+            history.push({ role: "user", content: "Begin the adventure." });
         }
 
-        this.log("AI_CALL_STARTING", { messagesCount: aiMessages.length });
-
         try {
+            this.log("AI_INVOKING");
             const response: any = await this.env.AI.run("@cf/meta/llama-3.3-70b-instruct-fp8-fast", {
-                messages: aiMessages,
+                messages: history,
             });
 
-            const newStory = response.response;
-            this.log("AI_RESPONSE_RECEIVED", { responseLength: newStory?.length });
+            const story = response.response;
+            this.log("AI_SUCCESS");
 
-            // Add only assistant response to visible history
-            const updatedMessages = [...s.messages, { role: "assistant" as const, content: newStory }];
+            // Update state with new message and transition back to VOTING
+            const finalMessages = [...history, { role: "assistant" as const, content: story }];
+            const deadline = Date.now() + VOTING_DURATION_MS;
 
-            // Set voting deadline
-            const votingDeadline = Date.now() + VOTING_DURATION_MS;
-
-            this.log("SETTING_ALARM", { votingDeadline: new Date(votingDeadline).toISOString() });
-            await this.ctx.storage.setAlarm(votingDeadline);
-
-            // Transition to VOTING and release lock
-            this.setState({
-                ...this.currentState,
-                messages: updatedMessages,
-                phase: "VOTING",
-                votingDeadline,
-                currentVotes: { "1": 0, "2": 0, "3": 0 },
-                votedUsers: [],
-                isProcessing: false // Release lock
-            });
-
-            this.log("ROUND_COMPLETE_VOTING_OPEN", { roundNumber: newRoundNumber });
-
-        } catch (err) {
-            this.log("AI_ERROR", { error: String(err) });
-
-            const errorMessages = [...s.messages, {
-                role: "assistant" as const,
-                content: "The narrator pauses, gathering their thoughts... What happens next?\n\n1. [Wait patiently]\n2. [Look around]\n3. [Call out into the void]"
-            }];
-
-            const votingDeadline = Date.now() + VOTING_DURATION_MS;
-            await this.ctx.storage.setAlarm(votingDeadline);
+            await this.ctx.storage.setAlarm(deadline);
 
             this.setState({
-                ...this.currentState,
-                messages: errorMessages,
+                ...this.currentState, // Important: use current state for non-history fields
+                messages: finalMessages,
                 phase: "VOTING",
-                votingDeadline,
-                currentVotes: { "1": 0, "2": 0, "3": 0 },
-                votedUsers: [],
-                isProcessing: false
+                votingDeadline: deadline,
+                roundNumber: nextRound // Re-verify round number
             });
 
-            this.log("ERROR_RECOVERY_COMPLETE");
+            this.log("ROUND_READY", { round: nextRound });
+
+        } catch (e) {
+            this.log("AI_FAILURE", { error: String(e) });
+            // Fallback strategy
+            const errorMsg = "The mist thickens, obscuring the path. Try again.\n\n1. [Wait]\n2. [Listen]\n3. [Move forward]";
+            this.setState({
+                ...this.currentState,
+                messages: [...this.currentState.messages, { role: "assistant", content: errorMsg }],
+                phase: "VOTING",
+                votingDeadline: Date.now() + 5000
+            });
+            await this.ctx.storage.setAlarm(Date.now() + 5000);
+        } finally {
+            this.isLocked = false;
+            this.log("LOCK_RELEASED");
         }
     }
 }
