@@ -111,12 +111,12 @@ DO NOT provide options for future turns.`
         }
     }
 
-    async alarm() {
+    override alarm = async () => {
         if (this.currentState.phase === "VOTING" && !this.isLocked) {
             this.log("ALARM_RESOLVING");
             await this.resolveVotes();
         }
-    }
+    };
 
     private async resolveVotes() {
         if (this.isLocked) return;
