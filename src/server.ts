@@ -1,42 +1,42 @@
-
 import { WorkerEntrypoint } from "cloudflare:workers";
-import { StoryAgent } from "./story-agent";
+import { routeAgentRequest } from "agents-sdk";
 
 export default {
     async fetch(request: Request, env: any) {
-        const url = new URL(request.url);
 
         console.log(`[Worker] Incoming request: ${request.method} ${request.url}`);
 
+        // Attempt to route to an Agent if the URL matches standard agent patterns
+        // OR manually rewrite our /agent URL to what routeAgentRequest expects if needed.
+        // However, routeAgentRequest usually expects /parties/:namespace/:id or /agents/:namespace/:id
+
+        // Let's try to map /agent requests to the StoryAgent
+        const url = new URL(request.url);
         if (url.pathname === "/agent") {
-            try {
-                const upgradeHeader = request.headers.get("Upgrade");
-                console.log(`[Worker] Processing /agent request. Upgrade header: ${upgradeHeader}`);
+            // Create a request that looks like what routeAgentRequest expects?
+            // Actually, routeAgentRequest takes options.
 
-                // Use a single global room for this MVP demo
-                const id = env.StoryAgent.idFromName("global-story-room");
-                const stub = env.StoryAgent.get(id);
+            // If we use routeAgentRequest, we can pass a prefix.
+            // But simpler: just use routeAgentRequest directly and update client to connect to /agents/StoryAgent/global-story-room
 
-                // Rewrite URL to root so Agent sees "/"
-                // This is often required if the Agent SDK expects to handle the root path
-                const newUrl = new URL(request.url);
-                newUrl.pathname = "/";
+            // BUT user wants /agent. 
+            // Let's rewrite the URL to a standard pattern that routeAgentRequest understands
+            // Typical pattern: /parties/StoryAgent/global-story-room
 
-                console.log(`[Worker] Forwarding to StoryAgent DO with URL: ${newUrl.toString()}`);
+            const newUrl = new URL(request.url);
+            newUrl.pathname = "/parties/StoryAgent/global-story-room";
 
-                const response = await stub.fetch(new Request(newUrl.toString(), request));
-                console.log(`[Worker] StoryAgent response status: ${response.status}`);
-                return response;
-            } catch (e: any) {
-                console.error("[Worker] Error connecting to StoryAgent:", e);
-                return new Response(`Error connecting to agent: ${e.message}\nStack: ${e.stack}`, { status: 500 });
-            }
+            console.log(`[Worker] Rewriting /agent to ${newUrl.pathname} for routeAgentRequest`);
+
+            return await routeAgentRequest(new Request(newUrl.toString(), request), env);
         }
+
+        // Also allow direct standard access if the client is updated
+        const agentResponse = await routeAgentRequest(request, env);
+        if (agentResponse) return agentResponse;
 
         // Serve static assets (for local dev mostly, or if configured)
         return env.ASSETS.fetch(request);
     }
-}
-
 // Export the Agent class so Durable Objects can find it
 export { StoryAgent };
