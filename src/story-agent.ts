@@ -29,25 +29,24 @@ export class StoryAgent extends Agent<Env, StoryState> {
             messages: [
                 {
                     role: "system",
-                    content: `You are the Dungeon Master for a collaborative interactive fiction game. 
-Your goal is to narrate EXACTLY ONE segment of the story at a time.
+                    content: `You are a strict Dungeon Master for a turn-based adventure.
+Your mission is to write ONLY the immediate response to the player's last action.
 
-RULES FOR YOUR RESPONSE:
-1. ONLY write consequences for the PREVIOUS player action.
-2. ONLY write ONE short paragraph (max 50 words).
-3. ALWAYS end with EXACTLY 3 numbered options for the NEXT turn.
-4. DO NOT play for the user. DO NOT narrate multiple turns.
-5. DO NOT invent user choices.
-6. Format options exactly as:
-   1. [Option A]
-   2. [Option B]
-   3. [Option C]
+CRITICAL RULES:
+1. Write EXACTLY one short paragraph of narration (max 40 words).
+2. End IMMEDIATELY with exactly 3 numbered options for the NEXT turn.
+3. NEVER write more than one scene.
+4. NEVER play out the options yourself.
+5. STOP writing after the 3rd option. 
 
-Example Output:
-You push through the heavy oak doors, finding a dusty library lit by floating candles. The smell of old parchment is overwhelming.
-1. Search the restricted section
-2. Ask the librarian for help
-3. Look for a secret passage`
+FORMAT:
+[Narration of what happened next]
+1. [Option 1]
+2. [Option 2]
+3. [Option 3]
+
+DO NOT write "You find yourself..." more than once.
+DO NOT provide options for future turns.`
                 }
             ],
             phase: "LOBBY",
@@ -72,18 +71,11 @@ You push through the heavy oak doors, finding a dusty library lit by floating ca
             details
         };
         console.log(`[STORY_LOG] ${JSON.stringify(logEntry)}`);
-
-        // Broadcast to clients for the Copy Log button
-        this.broadcast(JSON.stringify({
-            type: "DEBUG_LOG",
-            payload: logEntry
-        }));
+        this.broadcast(JSON.stringify({ type: "DEBUG_LOG", payload: logEntry }));
     }
 
     async onConnect(connection: any) {
-        if (!this.state) {
-            this.setState(this.getDefaultState());
-        }
+        if (!this.state) this.setState(this.getDefaultState());
         const s = this.currentState;
         this.setState({ ...s, connectedUsers: s.connectedUsers + 1 });
         this.log("CLIENT_CONNECTED", { id: connection.id });
@@ -91,9 +83,7 @@ You push through the heavy oak doors, finding a dusty library lit by floating ca
 
     async onClose(connection: any) {
         const s = this.currentState;
-        if (s.connectedUsers > 0) {
-            this.setState({ ...s, connectedUsers: s.connectedUsers - 1 });
-        }
+        if (s.connectedUsers > 0) this.setState({ ...s, connectedUsers: s.connectedUsers - 1 });
         this.log("CLIENT_DISCONNECTED", { id: connection.id });
     }
 
@@ -111,7 +101,6 @@ You push through the heavy oak doors, finding a dusty library lit by floating ca
             const updatedVotes = { ...s.currentVotes };
             updatedVotes[data.choice] = (updatedVotes[data.choice] || 0) + 1;
             const updatedVoters = [...s.votedUsers, id];
-
             this.setState({ ...s, currentVotes: updatedVotes, votedUsers: updatedVoters });
             this.log("VOTE_CAST", { user: id, choice: data.choice });
 
@@ -124,7 +113,7 @@ You push through the heavy oak doors, finding a dusty library lit by floating ca
 
     async alarm() {
         if (this.currentState.phase === "VOTING" && !this.isLocked) {
-            this.log("ALARM_RESOLVING_VOTES");
+            this.log("ALARM_RESOLVING");
             await this.resolveVotes();
         }
     }
@@ -156,27 +145,41 @@ You push through the heavy oak doors, finding a dusty library lit by floating ca
         const s = this.currentState;
         const nextRound = s.roundNumber + 1;
 
-        // Add the user's choice to the persistent history
-        const newMessages = [...s.messages];
+        // Cleanup history: Remove the options from past assistant messages
+        const cleanedHistory = s.messages.map(m => {
+            if (m.role === "assistant") {
+                const narrationOnly = m.content.split(/\n\d\./)[0].trim();
+                return { ...m, content: narrationOnly };
+            }
+            return m;
+        });
+
+        const newMessagesForState = [...s.messages];
         if (prompt) {
-            newMessages.push({ role: "user", content: `Selection: ${prompt}` });
+            newMessagesForState.push({ role: "user", content: `Selection: ${prompt}` });
         } else {
-            newMessages.push({ role: "user", content: "Adventure started." });
+            newMessagesForState.push({ role: "user", content: "Adventure started." });
         }
+
+        const aiPrompt = prompt
+            ? `The player selected: "${prompt}". Describe the immediate resulting scene and stop with 3 options.`
+            : "Describe the starting scene and stop with 3 options.";
 
         this.setState({
             ...s,
             phase: "NARRATING",
             roundNumber: nextRound,
-            messages: newMessages,
+            messages: newMessagesForState,
             currentVotes: { "1": 0, "2": 0, "3": 0 },
             votedUsers: []
         });
 
+        const messagesForAI = cleanedHistory.concat([{ role: "user", content: aiPrompt }]);
+
         try {
-            this.log("AI_PROMPTING", { prompt });
+            this.log("AI_INVOKING", { round: nextRound });
             const resp: any = await this.env.AI.run("@cf/meta/llama-3.3-70b-instruct-fp8-fast", {
-                messages: newMessages
+                messages: messagesForAI
             });
 
             const story = resp.response;
@@ -184,12 +187,12 @@ You push through the heavy oak doors, finding a dusty library lit by floating ca
             await this.ctx.storage.setAlarm(deadline);
 
             this.setState({
-                ...this.currentState,
-                messages: [...this.currentState.messages, { role: "assistant", content: story }],
+                ...this.state,
+                messages: [...this.state.messages, { role: "assistant", content: story }],
                 phase: "VOTING",
                 votingDeadline: deadline
             });
-            this.log("ROUND_STARTED", { round: nextRound });
+            this.log("ROUND_READY", { round: nextRound });
         } catch (e) {
             this.log("AI_ERROR", { error: String(e) });
         } finally {
