@@ -131,10 +131,5 @@ export class StoryAgent extends Agent<Env, StoryState> {
             const errorMessages = [...messages, { role: "system" as const, content: "The narrator stumbled. Please try again." }];
             this.setState({ ...this.currentState, messages: errorMessages });
         }
-
-        this.setState({ ...this.currentState, messages: errorMessages });
     }
-
-    // No explicit broadcast needed; setState triggers it automatically.
-}
 }
