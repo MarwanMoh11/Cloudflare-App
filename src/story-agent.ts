@@ -41,7 +41,8 @@ export class StoryAgent extends Agent<Env, StoryState> {
         super(state, env);
     }
 
-    async onConnect(connection: WebSocket) {
+    async onConnect(connection: any) {
+        console.log("[StoryAgent] onConnect called");
         // Initialize state if needed
         if (!this.state) {
             this.setState(this.currentState);
@@ -50,21 +51,28 @@ export class StoryAgent extends Agent<Env, StoryState> {
         const newState = { ...this.currentState };
         newState.connectedUsers++;
         this.setState(newState);
-
-        connection.addEventListener("message", (event) => {
-            const data = JSON.parse(event.data as string);
-            this.handleMessage(data);
-        });
-
-        connection.addEventListener("close", () => {
-            const s = this.currentState;
-            if (s.connectedUsers > 0) {
-                this.setState({ ...s, connectedUsers: s.connectedUsers - 1 });
-            }
-        });
     }
 
-    async handleMessage(data: any) {
+    async onClose(connection: any, code: number, reason: string, wasClean: boolean) {
+        console.log(`[StoryAgent] onClose called: code=${code}, reason=${reason}`);
+        const s = this.currentState;
+        if (s.connectedUsers > 0) {
+            this.setState({ ...s, connectedUsers: s.connectedUsers - 1 });
+        }
+    }
+
+    async onMessage(connection: any, message: string | ArrayBuffer) {
+        const msgStr = typeof message === "string" ? message : new TextDecoder().decode(message);
+        console.log(`[StoryAgent] onMessage received: ${msgStr}`);
+
+        let data: any;
+        try {
+            data = JSON.parse(msgStr);
+        } catch (e) {
+            console.error("[StoryAgent] Failed to parse message:", e);
+            return;
+        }
+
         // Always get fresh state
         const s = this.currentState;
 
