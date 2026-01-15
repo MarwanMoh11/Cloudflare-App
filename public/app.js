@@ -204,7 +204,7 @@ function renderState(state) {
         if (entry.role === "assistant") {
             // Remove DnD Tags from display
             content = content.replace(/\[\[.*?\]\]/g, "");
-            content = content.replace(/QUEST:\s*.*?\n/i, "");
+            content = content.replace(/^QUEST:.*$/im, "").trim();
 
             // Flexible regex to find options with or without brackets
             // Matches "1. Text" or "1. [Text]"

@@ -54,7 +54,8 @@ GM ENGINE RULES:
 3. CHOICES: End with exactly 3 numbered options.
 4. VARIETY: Offer 1 Combat/Risk, 1 Stealth/Social, 1 Creative/Investigation choice.
 
-QUEST: You set the quest in the first turn. Each turn must progress the party closer to the goal or present a meaningful setback.
+QUEST: Every adventure MUST start with a clear, concise quest objective.
+FORMAT: 'QUEST: [Objective]' on its OWN LINE, followed by narration on a new line.
 Tone: Cinematic, dark fantasy, high stakes.`
                 }
             ],
@@ -190,9 +191,12 @@ Tone: Cinematic, dark fantasy, high stakes.`
         if (text.includes("[[VICTORY]]")) s.phase = "VICTORY";
 
         // Initial Quest Setup (if round 1 and AI sets one)
-        if (s.roundNumber === 1 && stats.quest === "Awaiting adventure...") {
-            const questMatch = text.match(/QUEST:\s*(.*?)(?:\n|$)/i);
-            if (questMatch) stats.quest = questMatch[1].trim();
+        if (s.roundNumber === 1 && (stats.quest === "Awaiting adventure..." || !stats.quest)) {
+            const lines = text.split("\n");
+            const questLine = lines.find(l => l.toUpperCase().startsWith("QUEST:"));
+            if (questLine) {
+                stats.quest = questLine.replace(/^QUEST:\s*/i, "").trim();
+            }
         }
 
         if (stats.hp <= 0) s.phase = "GAMEOVER";
@@ -226,7 +230,7 @@ Tone: Cinematic, dark fantasy, high stakes.`
 
         const aiPrompt = prompt
             ? `The players chose: "${prompt}". Narration must reflect the visceral impact. PARTY HP: ${s.partyStats.hp}/${s.partyStats.maxHp}. GOLD: ${s.partyStats.gold}. LEVEL: ${s.partyStats.level}. Use tags like [[HP-10]] if they fail or get hurt, and [[GOLD+X]] for rewards.`
-            : "Begin the epic quest. Start with 'QUEST: [Objective]'. Describe the opening scene. HP: 100/100.";
+            : "Begin the epic quest. Start with 'QUEST: [Objective]' on a single line, then start the narration on a NEW line. Describe the opening scene. HP: 100/100.";
 
         this.setState({
             ...s,
