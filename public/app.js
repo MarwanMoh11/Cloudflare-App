@@ -1,12 +1,11 @@
 const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-const wsUrl = `${protocol}//${window.location.host}/agent`;
-
 let socket;
 let reconnectInterval;
 let timerInterval;
 let hasVoted = false;
 let currentRound = 0;
 let debugLogs = [];
+let roomCode = "";
 
 const chatWindow = document.getElementById("chat-window");
 const statusDot = document.getElementById("status-dot");
@@ -18,31 +17,87 @@ const timerBar = document.getElementById("timer-bar");
 const timerProgress = document.getElementById("timer-progress");
 const timerText = document.getElementById("timer-text");
 const phaseLabel = document.getElementById("phase-label");
+const headerRoomInfo = document.getElementById("header-room-info");
+const currentRoomBadge = document.getElementById("current-room-badge");
 
 function addLog(source, data) {
-    const entry = {
-        clientTime: new Date().toISOString(),
-        source,
-        data
-    };
+    const entry = { clientTime: new Date().toISOString(), source, data };
     debugLogs.push(entry);
-    // Keep last 100 logs
     if (debugLogs.length > 100) debugLogs.shift();
     console.log(`[LOG][${source}]`, data);
 }
 
 function copyLogs() {
     const text = JSON.stringify(debugLogs, null, 2);
-    navigator.clipboard.writeText(text).then(() => {
-        alert("Logs copied to clipboard!");
-    }).catch(err => {
-        console.error("Copy failed", err);
-        alert("Copy failed. See console.");
-    });
+    navigator.clipboard.writeText(text).then(() => alert("Logs copied!")).catch(() => alert("Copy failed. Check console."));
+}
+
+function copyRoomLink() {
+    const url = `${window.location.origin}${window.location.pathname}?room=${roomCode}`;
+    navigator.clipboard.writeText(url).then(() => alert("Invite link copied to clipboard!")).catch(() => alert("Copy failed."));
+}
+
+function checkRoom() {
+    const params = new URLSearchParams(window.location.search);
+    const code = params.get("room");
+    if (code) {
+        joinRoom(code.toUpperCase());
+    } else {
+        renderRoomSelector();
+    }
+}
+
+function renderRoomSelector() {
+    chatWindow.innerHTML = `
+        <div class="room-selector">
+            <h2>🎭 DreamStream</h2>
+            <p>Enter a code to join a session or create a new one to play with friends.</p>
+            <div class="input-group">
+                <input type="text" id="room-input" class="room-input" placeholder="ROOM CODE" maxlength="10">
+                <button class="primary-btn" onclick="handleJoin()">Join Adventure</button>
+            </div>
+            <div class="divider">OR</div>
+            <button class="secondary-btn" onclick="createRoom()">Create New Room</button>
+        </div>
+    `;
+    controlsArea.classList.add("hidden");
+    headerRoomInfo.classList.add("hidden");
+}
+
+function handleJoin() {
+    const input = document.getElementById("room-input");
+    const code = input.value.trim().toUpperCase();
+    if (code) joinRoom(code);
+    else alert("Please enter a room code.");
+}
+
+function createRoom() {
+    const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    let code = "";
+    for (let i = 0; i < 4; i++) code += chars.charAt(Math.floor(Math.random() * chars.length));
+    joinRoom(code);
+}
+
+function joinRoom(code) {
+    roomCode = code;
+    currentRoomBadge.innerText = code;
+    headerRoomInfo.classList.remove("hidden");
+
+    // Update URL without reloading
+    const newUrl = `${window.location.origin}${window.location.pathname}?room=${code}`;
+    window.history.pushState({ path: newUrl }, "", newUrl);
+
+    connect();
 }
 
 function connect() {
+    if (socket) socket.close();
+
+    const wsUrl = `${protocol}//${window.location.host}/agent?room=${roomCode}`;
     addLog("CLIENT", `Connecting to ${wsUrl}`);
+
+    statusText.innerText = "Connecting...";
+
     try {
         socket = new WebSocket(wsUrl);
     } catch (e) {
@@ -60,16 +115,19 @@ function connect() {
     socket.onclose = (event) => {
         addLog("CLIENT", `WebSocket Closed: ${event.code}`);
         statusDot.classList.remove("connected");
-        statusText.innerText = "Disconnected";
+        statusText.innerText = "Offline";
         clearInterval(timerInterval);
-        reconnectInterval = setInterval(() => {
-            if (socket.readyState === WebSocket.CLOSED) connect();
-        }, 5000);
+
+        // Only reconnect if we still have a room code
+        if (roomCode) {
+            reconnectInterval = setInterval(() => {
+                if (socket.readyState === WebSocket.CLOSED) connect();
+            }, 5000);
+        }
     };
 
     socket.onmessage = (event) => {
         const msg = JSON.parse(event.data);
-
         if (msg.type === "cf_agent_state") {
             renderState(msg.state);
         } else if (msg.type === "DEBUG_LOG") {
@@ -84,38 +142,40 @@ function renderState(state) {
     usersCount.innerText = `${state.connectedUsers || 1} online`;
 
     if (state.roundNumber && state.roundNumber !== currentRound) {
-        addLog("CLIENT", `New Round detected: ${state.roundNumber}`);
+        addLog("CLIENT", `New Round: ${state.roundNumber}`);
         currentRound = state.roundNumber;
         hasVoted = false;
-        document.querySelectorAll(".vote-btn").forEach(btn => {
-            btn.classList.remove("selected");
-        });
+        document.querySelectorAll(".vote-btn").forEach(btn => btn.classList.remove("selected"));
     }
 
     if (state.phase === "LOBBY") {
-        renderLobby(state.connectedUsers);
+        chatWindow.innerHTML = `
+            <div class="lobby-screen">
+                <h2>🏰 Room: ${roomCode}</h2>
+                <p>Waiting for the adventure to begin...</p>
+                <div class="user-count">${state.connectedUsers || 1} explorer${state.connectedUsers !== 1 ? 's' : ''} ready</div>
+                <button class="start-btn" onclick="startGame()">Start Adventure</button>
+                <p style="font-size: 0.8rem; opacity: 0.6;">Share the room code or link to play with others!</p>
+            </div>
+        `;
+        controlsArea.classList.add("hidden");
         return;
     }
 
     // Render Chat
     chatWindow.innerHTML = "";
-    const stories = state.messages || [];
-    stories.forEach(entry => {
+    (state.messages || []).forEach(entry => {
         if (entry.role === "system") return;
-
         const div = document.createElement("div");
         div.className = `message ${entry.role === "assistant" ? "model" : "user"}`;
-
         let content = entry.content;
         if (entry.role === "assistant") {
             content = content.replace(/(\d\.\s*\[[^\]]+\])/g, '<strong>$1</strong>');
             content = content.replace(/\n/g, '<br>');
         }
-
         div.innerHTML = content;
         chatWindow.appendChild(div);
     });
-
     chatWindow.scrollTop = chatWindow.scrollHeight;
 
     // Controls
@@ -143,28 +203,12 @@ function renderState(state) {
     }
 }
 
-function renderLobby(userCount) {
-    chatWindow.innerHTML = `
-        <div class="lobby-screen">
-            <h2>🎭 DreamStream</h2>
-            <p>Collaborative AI Storytelling</p>
-            <p class="user-count">${userCount} user${userCount !== 1 ? 's' : ''} online</p>
-            <button class="start-btn" onclick="startGame()">Start Game</button>
-        </div>
-    `;
-    controlsArea.classList.add("hidden");
-}
-
 function startGame() {
-    addLog("CLIENT", "Starting Game");
-    if (socket?.readyState === WebSocket.OPEN) {
-        socket.send(JSON.stringify({ type: "START_GAME" }));
-    }
+    if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "START_GAME" }));
 }
 
 function sendVote(choice) {
     if (hasVoted) return;
-    addLog("CLIENT", `Voting for ${choice}`);
     if (socket?.readyState === WebSocket.OPEN) {
         socket.send(JSON.stringify({ type: "VOTE", choice }));
         hasVoted = true;
@@ -198,6 +242,6 @@ if ('webkitSpeechRecognition' in window) {
         else if (t.includes("two")) sendVote("2");
         else if (t.includes("three")) sendVote("3");
     };
-} else { voiceBtn.style.display = "none"; }
+} else voiceBtn.style.display = "none";
 
-connect();
+checkRoom();
