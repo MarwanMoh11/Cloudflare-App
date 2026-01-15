@@ -27,8 +27,11 @@ function connect() {
         statusText.innerText = "Online";
         clearInterval(reconnectInterval);
 
-        // Auto-start game if in lobby
-        socket.send(JSON.stringify({ type: "START_GAME" }));
+        // Reset state for fresh start, then start game
+        socket.send(JSON.stringify({ type: "RESET_STATE" }));
+        setTimeout(() => {
+            socket.send(JSON.stringify({ type: "START_GAME" }));
+        }, 100);
     };
 
     socket.onclose = (event) => {

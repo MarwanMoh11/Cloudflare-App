@@ -68,10 +68,39 @@ export class StoryAgent extends Agent<Env, StoryState> {
         // Always get fresh state
         const s = this.currentState;
 
+        console.log(`[StoryAgent] Handling message: ${JSON.stringify(data)}, current phase: ${s.phase}`);
+
+        if (data.type === "RESET_STATE") {
+            // Allow force-resetting state for debug/fresh start
+            console.log("[StoryAgent] Resetting state to defaults");
+            this.setState({
+                messages: [
+                    {
+                        role: "system",
+                        content: `You are the Dungeon Master for a collaborative interactive fiction game. 
+        Your goal is to narrate a compelling story based on user votes. 
+        Keep responses concise (under 100 words) and end with 3 distinct options for valid actions the players can take.
+        Format options as:
+        1. [Action 1]
+        2. [Action 2]
+        3. [Action 3]
+        Start the story by describing a mysterious setting.`
+                    }
+                ],
+                phase: "LOBBY",
+                currentVotes: {},
+                connectedUsers: 1
+            });
+            return;
+        }
+
         if (data.type === "START_GAME" && s.phase === "LOBBY") {
+            console.log("[StoryAgent] Starting game - transitioning to NARRATING phase");
             const newState: StoryState = { ...s, phase: "NARRATING" };
             this.setState(newState);
             await this.generateStory("Start the story.");
+        } else if (data.type === "START_GAME" && s.phase !== "LOBBY") {
+            console.log(`[StoryAgent] Ignoring START_GAME - phase is already ${s.phase}`);
         } else if (data.type === "VOTE" && s.phase === "VOTING") {
             const choice = data.choice; // e.g., "1", "2", or "3"
             const currentVotes = { ...s.currentVotes };
@@ -82,6 +111,8 @@ export class StoryAgent extends Agent<Env, StoryState> {
     }
 
     async generateStory(userAction: string) {
+        console.log(`[StoryAgent] generateStory called with: ${userAction}`);
+
         // Update phase to narrating
         this.setState({ ...this.currentState, phase: "NARRATING" });
 
@@ -90,10 +121,13 @@ export class StoryAgent extends Agent<Env, StoryState> {
         this.setState({ ...this.currentState, messages });
 
         try {
+            console.log("[StoryAgent] Calling AI with messages:", JSON.stringify(messages));
             // Use native AI binding directly
             const response: any = await this.env.AI.run("@cf/meta/llama-3.3-70b-instruct-fp8-fast", {
                 messages: messages,
             });
+
+            console.log("[StoryAgent] AI response received:", JSON.stringify(response));
 
             const newStory = response.response;
 
@@ -108,9 +142,9 @@ export class StoryAgent extends Agent<Env, StoryState> {
             });
 
         } catch (err) {
-            console.error("AI Error:", err);
-            const errorMessages = [...messages, { role: "system" as const, content: "The narrator stumbled. Please try again." }];
-            this.setState({ ...this.currentState, messages: errorMessages });
+            console.error("[StoryAgent] AI Error:", err);
+            const errorMessages = [...messages, { role: "assistant" as const, content: "The narrator stumbled. An error occurred while generating the story. Please try again." }];
+            this.setState({ ...this.currentState, messages: errorMessages, phase: "VOTING" });
         }
     }
 }
