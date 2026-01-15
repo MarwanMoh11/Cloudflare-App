@@ -14,22 +14,21 @@ export default {
         // Let's try to map /agent requests to the StoryAgent
         const url = new URL(request.url);
         if (url.pathname === "/agent") {
-            // Create a request that looks like what routeAgentRequest expects?
-            // Actually, routeAgentRequest takes options.
+            try {
+                // Use a single global room for this MVP demo
+                const id = env.StoryAgent.idFromName("global-story-room");
+                const stub = env.StoryAgent.get(id);
 
-            // If we use routeAgentRequest, we can pass a prefix.
-            // But simpler: just use routeAgentRequest directly and update client to connect to /agents/StoryAgent/global-story-room
+                // Inject specific headers required by agents-sdk (partyserver)
+                const newRequest = new Request(request);
+                newRequest.headers.set("x-partykit-room", "global-story-room");
 
-            // BUT user wants /agent.
-            // Let's rewrite the URL to a standard pattern that routeAgentRequest understands
-            // Typical pattern: /parties/StoryAgent/global-story-room
-
-            const newUrl = new URL(request.url);
-            newUrl.pathname = "/parties/StoryAgent/global-story-room";
-
-            console.log(`[Worker] Rewriting /agent to ${newUrl.pathname} for routeAgentRequest`);
-
-            return await routeAgentRequest(new Request(newUrl.toString(), request), env);
+                console.log(`[Worker] Manually routing /agent to global-story-room with injected headers`);
+                return await stub.fetch(newRequest);
+            } catch (e: any) {
+                console.error("[Worker] Error connecting to StoryAgent:", e);
+                return new Response(`Error connecting to agent: ${e.message}\nStack: ${e.stack}`, { status: 500 });
+            }
         }
 
         // Also allow direct standard access if the client is updated
