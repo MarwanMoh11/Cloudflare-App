@@ -1,6 +1,5 @@
 
 import { Agent } from "agents-sdk";
-import { Ai } from "@cloudflare/ai";
 
 interface StoryState {
     messages: { role: "system" | "user" | "assistant"; content: string }[];
@@ -96,18 +95,17 @@ export class StoryAgent extends Agent<Env, StoryState> {
         this.setState({ ...this.currentState, phase: "NARRATING" });
         this.broadcastState();
 
-        const ai = new Ai(this.env.AI);
-
         // Add user message to history
         const messages = [...this.currentState.messages, { role: "user" as const, content: userAction }];
         this.setState({ ...this.currentState, messages });
 
         try {
-            const response = await ai.run("@cf/meta/llama-3.3-70b-instruct-fp8-fast" as any, {
+            // Use native AI binding directly
+            const response: any = await this.env.AI.run("@cf/meta/llama-3.3-70b-instruct-fp8-fast", {
                 messages: messages,
             });
 
-            const newStory = (response as any).response;
+            const newStory = response.response;
 
             const newMessages = [...messages, { role: "assistant" as const, content: newStory }];
 
