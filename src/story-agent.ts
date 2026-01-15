@@ -115,6 +115,36 @@ export class StoryAgent extends Agent<Env, StoryState> {
             currentVotes[choice] = (currentVotes[choice] || 0) + 1;
 
             this.setState({ ...s, currentVotes });
+
+            // Check if we have enough votes to proceed (for MVP, 1 vote is enough)
+            const totalVotes = Object.values(currentVotes).reduce((a, b) => a + b, 0);
+            console.log(`[StoryAgent] Total votes: ${totalVotes}`);
+
+            if (totalVotes >= 1) {
+                // Tally votes and find winning option
+                const winningChoice = Object.entries(currentVotes)
+                    .sort(([, a], [, b]) => b - a)[0][0];
+
+                console.log(`[StoryAgent] Winning choice: Option ${winningChoice}`);
+
+                // Continue story with the winning choice
+                await this.generateStory(`The players chose Option ${winningChoice}. Continue the story based on this choice.`);
+            }
+        } else if (data.type === "CONTINUE_STORY" && s.phase === "VOTING") {
+            // Manual trigger to continue story with current votes
+            const currentVotes = s.currentVotes;
+            const entries = Object.entries(currentVotes);
+
+            if (entries.length > 0) {
+                const winningChoice = entries.sort(([, a], [, b]) => b - a)[0][0];
+                console.log(`[StoryAgent] Manual continue - Winning choice: Option ${winningChoice}`);
+                await this.generateStory(`The players chose Option ${winningChoice}. Continue the story based on this choice.`);
+            } else {
+                // No votes, pick random option
+                const randomChoice = Math.floor(Math.random() * 3) + 1;
+                console.log(`[StoryAgent] No votes, picking random: Option ${randomChoice}`);
+                await this.generateStory(`Continue the story with Option ${randomChoice}.`);
+            }
         }
     }
 
