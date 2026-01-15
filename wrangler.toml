@@ -21,3 +21,11 @@ binding = "ASSETS"
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["StoryAgent"]
+
+[observability]
+enabled = true
+head_sampling_rate = 1 # 100% sampling for debugging (0-1 range usually, but user snippet used different format, sticking to standard if possible or user provided structure)
+
+[observability.logs]
+enabled = true
+invocation_logs = true
