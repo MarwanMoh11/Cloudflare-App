@@ -11,10 +11,28 @@ const statusText = document.getElementById("status-text");
 const usersCount = document.getElementById("users-count");
 const voiceBtn = document.getElementById("voice-btn");
 
+function logToChat(msg, type = "system") {
+    console.log(msg);
+    const div = document.createElement("div");
+    div.className = `message ${type}`;
+    div.innerText = `[DEBUG] ${msg}`; // debug prefix
+    div.style.fontFamily = "monospace";
+    div.style.fontSize = "0.75rem";
+    chatWindow.appendChild(div);
+    chatWindow.scrollTop = chatWindow.scrollHeight;
+}
+
 function connect() {
-    socket = new WebSocket(wsUrl);
+    logToChat(`Connecting to ${wsUrl}...`);
+    try {
+        socket = new WebSocket(wsUrl);
+    } catch (e) {
+        logToChat(`Error creating WebSocket: ${e.message}`, "system");
+        return;
+    }
 
     socket.onopen = () => {
+        logToChat("WebSocket Open!", "system");
         statusDot.classList.add("connected");
         statusText.innerText = "Online";
         clearInterval(reconnectInterval);
@@ -23,18 +41,28 @@ function connect() {
         socket.send(JSON.stringify({ type: "START_GAME" }));
     };
 
-    socket.onclose = () => {
+    socket.onclose = (event) => {
+        logToChat(`WebSocket Closed. Code: ${event.code}, Reason: ${event.reason || 'None'}, WasClean: ${event.wasClean}`, "system");
         statusDot.classList.remove("connected");
         statusText.innerText = "Disconnected";
         reconnectInterval = setInterval(() => {
-            if (socket.readyState === WebSocket.CLOSED) connect();
-        }, 3000);
+            if (socket.readyState === WebSocket.CLOSED) {
+                logToChat("Reconnecting...", "system");
+                connect();
+            }
+        }, 5000); // Slower reconnect
+    };
+
+    socket.onerror = (error) => {
+        logToChat("WebSocket Error occurred (check console for details)", "system");
     };
 
     socket.onmessage = (event) => {
         const msg = JSON.parse(event.data);
         if (msg.type === "STATE_UPDATE") {
             renderState(msg.data);
+        } else {
+            logToChat(`Received unknown message: ${JSON.stringify(msg)}`);
         }
     };
 }
