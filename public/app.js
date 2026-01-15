@@ -48,31 +48,48 @@ function connect() {
 
     socket.onmessage = (event) => {
         const msg = JSON.parse(event.data);
-        if (msg.type === "STATE_UPDATE") {
+
+        // Handle standard agents-sdk state update
+        if (msg.type === "cf_agent_state") {
+            renderState(msg.state);
+        }
+        // Handle legacy custom update if any (backward compatibility during transition)
+        else if (msg.type === "STATE_UPDATE") {
             renderState(msg.data);
-        } else {
-            console.log(`Received unknown message: ${JSON.stringify(msg)}`);
         }
     };
 }
 
 function renderState(state) {
-    // Update users
-    usersCount.innerText = `(${state.users} connected)`;
+    // Update user count
+    usersCount.innerText = `${state.connectedUsers || state.users || 1} online`;
 
-    // Update Chat
+    // Render Story Log
     chatWindow.innerHTML = "";
-    state.messages.forEach(msg => {
+    // Check for 'messages' (native state) or 'story' (old custom state)
+    const stories = state.messages || state.story || [];
+
+    stories.forEach(entry => {
         // Hide system prompts from the UI
-        if (msg.role === "system") return;
+        if (entry.role === "system") return;
 
         const div = document.createElement("div");
-        div.className = `message ${msg.role}`;
-        // Simple markdown-ish parse for bold
-        div.innerHTML = msg.content.replace(/\*\*(.*?)\*\*/g, '<b>$1</b>').replace(/\n/g, '<br>');
+        // Ensure role class matches CSS (user/assistant)
+        const role = entry.role === "assistant" ? "model" : entry.role;
+        div.className = `message ${role}`;
+
+        div.innerText = entry.content;
         chatWindow.appendChild(div);
     });
     chatWindow.scrollTop = chatWindow.scrollHeight;
+
+    // Handle Game Phase
+    // Show controls only if phase is VOTING (case insensitive just in case)
+    if (state.phase === "VOTING" || state.phase === "voting") {
+        controlsArea.classList.remove("hidden");
+    } else {
+        controlsArea.classList.add("hidden");
+    }
 
     // Update Buttons
     const buttons = document.querySelectorAll("#vote-panel button");

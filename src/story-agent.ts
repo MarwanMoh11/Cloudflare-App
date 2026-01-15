@@ -132,18 +132,9 @@ export class StoryAgent extends Agent<Env, StoryState> {
             this.setState({ ...this.currentState, messages: errorMessages });
         }
 
-        this.broadcastState();
+        this.setState({ ...this.currentState, messages: errorMessages });
     }
 
-    broadcastState() {
-        this.broadcast(JSON.stringify({
-            type: "STATE_UPDATE",
-            data: {
-                messages: this.state.messages,
-                phase: this.state.phase,
-                votes: this.state.currentVotes,
-                users: this.state.connectedUsers
-            }
-        }));
-    }
+    // No explicit broadcast needed; setState triggers it automatically.
+}
 }
