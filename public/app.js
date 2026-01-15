@@ -9,6 +9,7 @@ const chatWindow = document.getElementById("chat-window");
 const statusDot = document.getElementById("status-dot");
 const statusText = document.getElementById("status-text");
 const usersCount = document.getElementById("users-count");
+const controlsArea = document.getElementById("controls");
 const voiceBtn = document.getElementById("voice-btn");
 
 function connect() {
