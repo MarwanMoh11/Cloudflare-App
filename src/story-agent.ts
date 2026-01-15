@@ -59,7 +59,7 @@ export class StoryAgent extends Agent<Env, StoryState> {
         newState.connectedUsers++;
         this.setState(newState);
 
-        this.broadcastState();
+        this.setState(newState);
 
         connection.addEventListener("message", (event) => {
             const data = JSON.parse(event.data as string);
@@ -71,7 +71,9 @@ export class StoryAgent extends Agent<Env, StoryState> {
             if (s.connectedUsers > 0) {
                 this.setState({ ...s, connectedUsers: s.connectedUsers - 1 });
             }
-            this.broadcastState();
+            if (s.connectedUsers > 0) {
+                this.setState({ ...s, connectedUsers: s.connectedUsers - 1 });
+            }
         });
     }
 
@@ -82,7 +84,8 @@ export class StoryAgent extends Agent<Env, StoryState> {
         if (data.type === "START_GAME" && s.phase === "LOBBY") {
             const newState: StoryState = { ...s, phase: "NARRATING" };
             this.setState(newState);
-            this.broadcastState();
+            const newState: StoryState = { ...s, phase: "NARRATING" };
+            this.setState(newState);
             await this.generateStory("Start the story.");
         } else if (data.type === "VOTE" && s.phase === "VOTING") {
             const choice = data.choice; // e.g., "1", "2", or "3"
@@ -97,7 +100,6 @@ export class StoryAgent extends Agent<Env, StoryState> {
     async generateStory(userAction: string) {
         // Update phase to narrating
         this.setState({ ...this.currentState, phase: "NARRATING" });
-        this.broadcastState();
 
         // Add user message to history
         const messages = [...this.currentState.messages, { role: "user" as const, content: userAction }];
