@@ -175,15 +175,19 @@ function renderState(state) {
         let content = entry.content;
 
         if (entry.role === "assistant") {
-            // Find options using regex
-            const optionMatches = [...content.matchAll(/(\d)\.\s*\[([^\]]+)\]/g)];
+            // Flexible regex to find options with or without brackets
+            // Matches "1. Text" or "1. [Text]"
+            const optionMatches = [...content.matchAll(/^(\d)\.\s*(?:\[(.*?)\]|(.*?))(?:\r?\n|$)/gm)];
+
             if (optionMatches.length > 0) {
-                // If it's the last assistant message and we are in VOTING, extract them
                 const isLatest = idx === (state.messages || []).length - 1;
                 if (isLatest && state.phase === "VOTING") {
-                    extractedOptions = optionMatches.map(m => ({ id: m[1], text: m[2] }));
+                    extractedOptions = optionMatches.map(m => ({
+                        id: m[1],
+                        text: (m[2] || m[3] || "").trim()
+                    }));
                 }
-                // Strip options from the displayed content
+                // Strip all numbered options from the displayed content
                 content = content.split(/\n\d\./)[0].trim();
             }
             content = content.replace(/\n/g, '<br>');
