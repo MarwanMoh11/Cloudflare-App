@@ -1,0 +1,22 @@
+name = "dreamstream"
+main = "src/server.ts"
+compatibility_date = "2024-02-08"
+
+# Enable Durable Objects
+[durable_objects]
+bindings = [
+  { name = "StoryAgent", class_name = "StoryAgent" }
+]
+
+# Enable Workers AI
+[ai]
+binding = "AI"
+
+# Static Assets
+[assets]
+directory = "./public"
+binding = "ASSETS"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["StoryAgent"]

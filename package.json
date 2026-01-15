@@ -1,0 +1,23 @@
+{
+  "name": "dreamstream",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev",
+    "start": "wrangler dev",
+    "build": "tsc",
+    "cf-typegen": "wrangler types"
+  },
+  "dependencies": {
+    "@cloudflare/ai": "^1.2.2",
+    "agents-sdk": "npm:agents@latest",
+    "hono": "^4.0.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20240208.0",
+    "typescript": "^5.3.3",
+    "wrangler": "^3.28.1"
+  }
+}
