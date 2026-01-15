@@ -6,8 +6,13 @@ export default {
     async fetch(request: Request, env: any) {
         const url = new URL(request.url);
 
+        console.log(`[Worker] Incoming request: ${request.method} ${request.url}`);
+
         if (url.pathname === "/agent") {
             try {
+                const upgradeHeader = request.headers.get("Upgrade");
+                console.log(`[Worker] Processing /agent request. Upgrade header: ${upgradeHeader}`);
+
                 // Use a single global room for this MVP demo
                 const id = env.StoryAgent.idFromName("global-story-room");
                 const stub = env.StoryAgent.get(id);
@@ -17,10 +22,14 @@ export default {
                 const newUrl = new URL(request.url);
                 newUrl.pathname = "/";
 
-                return await stub.fetch(new Request(newUrl.toString(), request));
+                console.log(`[Worker] Forwarding to StoryAgent DO with URL: ${newUrl.toString()}`);
+
+                const response = await stub.fetch(new Request(newUrl.toString(), request));
+                console.log(`[Worker] StoryAgent response status: ${response.status}`);
+                return response;
             } catch (e: any) {
-                console.error("Error connecting to StoryAgent:", e);
-                return new Response(`Error connecting to agent: ${e.message}`, { status: 500 });
+                console.error("[Worker] Error connecting to StoryAgent:", e);
+                return new Response(`Error connecting to agent: ${e.message}\nStack: ${e.stack}`, { status: 500 });
             }
         }
 
