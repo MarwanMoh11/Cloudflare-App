@@ -4,22 +4,27 @@ import { Agent } from "agents-sdk";
 interface StoryState {
     messages: { role: "system" | "user" | "assistant"; content: string }[];
     phase: "LOBBY" | "VOTING" | "NARRATING";
-    currentVotes: Record<string, number>; // option -> count
+    currentVotes: Record<string, number>;
     connectedUsers: number;
-    votingDeadline?: number; // timestamp when voting ends
-    votedUsers: string[]; // track who has voted
+    votingDeadline?: number;
+    votedUsers: string[];
+    roundNumber: number; // Track rounds to prevent stale alarm executions
 }
 
 interface Env {
     AI: any;
 }
 
-const VOTING_DURATION_MS = 20000; // 20 seconds for voting
+const VOTING_DURATION_MS = 20000; // 20 seconds
 
 export class StoryAgent extends Agent<Env, StoryState> {
 
     get currentState(): StoryState {
-        return this.state || {
+        return this.state || this.getDefaultState();
+    }
+
+    getDefaultState(): StoryState {
+        return {
             messages: [
                 {
                     role: "system",
@@ -30,13 +35,14 @@ Format options EXACTLY like this:
 1. [First action option]
 2. [Second action option]
 3. [Third action option]
-Never mention voting, options being chosen, or game mechanics. Just narrate naturally.`
+Never mention voting, options being chosen, players, or game mechanics. Just narrate naturally as if telling a story.`
                 }
             ],
             phase: "LOBBY",
-            currentVotes: {},
+            currentVotes: { "1": 0, "2": 0, "3": 0 },
             connectedUsers: 0,
-            votedUsers: []
+            votedUsers: [],
+            roundNumber: 0
         };
     }
 
@@ -45,18 +51,20 @@ Never mention voting, options being chosen, or game mechanics. Just narrate natu
     }
 
     async onConnect(connection: any) {
-        console.log("[StoryAgent] onConnect called");
+        console.log("[StoryAgent] New connection");
+
         if (!this.state) {
-            this.setState(this.currentState);
+            this.setState(this.getDefaultState());
         }
 
-        const newState = { ...this.currentState };
-        newState.connectedUsers++;
-        this.setState(newState);
+        this.setState({
+            ...this.currentState,
+            connectedUsers: this.currentState.connectedUsers + 1
+        });
     }
 
     async onClose(connection: any, code: number, reason: string, wasClean: boolean) {
-        console.log(`[StoryAgent] onClose called`);
+        console.log("[StoryAgent] Connection closed");
         const s = this.currentState;
         if (s.connectedUsers > 0) {
             this.setState({ ...s, connectedUsers: s.connectedUsers - 1 });
@@ -70,149 +78,181 @@ Never mention voting, options being chosen, or game mechanics. Just narrate natu
         try {
             data = JSON.parse(msgStr);
         } catch (e) {
-            console.error("[StoryAgent] Failed to parse message:", e);
             return;
         }
 
         const s = this.currentState;
-        const connectionId = connection.id || "unknown";
+        const connectionId = connection.id || `user-${Date.now()}`;
 
-        if (data.type === "RESET_STATE") {
-            console.log("[StoryAgent] Resetting state");
-            this.setState({
-                messages: this.currentState.messages.slice(0, 1), // Keep only system prompt
-                phase: "LOBBY",
-                currentVotes: {},
-                connectedUsers: 1,
-                votedUsers: []
-            });
-            return;
-        }
+        switch (data.type) {
+            case "START_GAME":
+                if (s.phase === "LOBBY") {
+                    await this.startNewRound(null);
+                }
+                break;
 
-        if (data.type === "START_GAME" && s.phase === "LOBBY") {
-            console.log("[StoryAgent] Starting game");
-            this.setState({ ...s, phase: "NARRATING" });
-            await this.generateStory(null); // null = initial story
-        } else if (data.type === "VOTE" && s.phase === "VOTING") {
-            // Check if user already voted
-            if (s.votedUsers.includes(connectionId)) {
-                console.log(`[StoryAgent] User ${connectionId} already voted`);
-                return;
-            }
+            case "VOTE":
+                if (s.phase !== "VOTING") {
+                    console.log("[StoryAgent] Ignoring vote - not in VOTING phase");
+                    return;
+                }
+                if (s.votedUsers.includes(connectionId)) {
+                    console.log("[StoryAgent] User already voted");
+                    return;
+                }
 
-            const choice = data.choice;
-            const currentVotes = { ...s.currentVotes };
-            currentVotes[choice] = (currentVotes[choice] || 0) + 1;
-            const votedUsers = [...s.votedUsers, connectionId];
+                const choice = data.choice;
+                const newVotes = { ...s.currentVotes };
+                newVotes[choice] = (newVotes[choice] || 0) + 1;
+                const newVotedUsers = [...s.votedUsers, connectionId];
 
-            this.setState({ ...s, currentVotes, votedUsers });
-            console.log(`[StoryAgent] Vote recorded: Option ${choice}, total votes: ${votedUsers.length}`);
+                console.log(`[StoryAgent] Vote recorded: Option ${choice}, voters: ${newVotedUsers.length}/${s.connectedUsers}`);
 
-            // Check if all connected users have voted
-            if (votedUsers.length >= s.connectedUsers) {
-                console.log("[StoryAgent] All users voted, resolving early");
-                await this.resolveVotes();
-            }
+                this.setState({
+                    ...s,
+                    currentVotes: newVotes,
+                    votedUsers: newVotedUsers
+                });
+
+                // Check if all users have voted - resolve immediately
+                if (newVotedUsers.length >= s.connectedUsers && s.connectedUsers > 0) {
+                    console.log("[StoryAgent] All users voted - resolving immediately");
+                    // Cancel the alarm since we're resolving early
+                    await this.ctx.storage.deleteAlarm();
+                    await this.resolveAndContinue(s.roundNumber);
+                }
+                break;
         }
     }
 
-    // Called by Durable Object alarm
     async alarm() {
-        console.log("[StoryAgent] Alarm triggered - voting deadline reached");
-        if (this.currentState.phase === "VOTING") {
-            await this.resolveVotes();
+        const s = this.currentState;
+        console.log(`[StoryAgent] Alarm fired. Phase: ${s.phase}, Round: ${s.roundNumber}`);
+
+        // Only process if still in VOTING phase
+        if (s.phase === "VOTING") {
+            await this.resolveAndContinue(s.roundNumber);
+        } else {
+            console.log("[StoryAgent] Alarm ignored - not in VOTING phase");
         }
     }
 
-    async resolveVotes() {
+    async resolveAndContinue(expectedRound: number) {
         const s = this.currentState;
-        const votes = s.currentVotes;
 
-        let winningChoice = "1"; // default
+        // Guard: Check if this is for the current round
+        if (s.roundNumber !== expectedRound) {
+            console.log(`[StoryAgent] Stale resolution ignored. Expected round ${expectedRound}, current ${s.roundNumber}`);
+            return;
+        }
+
+        // Guard: Check if already transitioned
+        if (s.phase !== "VOTING") {
+            console.log("[StoryAgent] Resolution ignored - already transitioned from VOTING");
+            return;
+        }
+
+        // Find winning choice
+        let winningChoice = "1";
         let maxVotes = 0;
-
-        for (const [choice, count] of Object.entries(votes)) {
+        for (const [choice, count] of Object.entries(s.currentVotes)) {
             if (count > maxVotes) {
                 maxVotes = count;
                 winningChoice = choice;
             }
         }
 
-        console.log(`[StoryAgent] Resolving votes - Winner: Option ${winningChoice}`);
+        console.log(`[StoryAgent] Winner: Option ${winningChoice} with ${maxVotes} votes`);
 
-        // Get the option text from the last assistant message
+        // Extract actual option text from last message
         const lastMessage = s.messages[s.messages.length - 1];
         let chosenAction = `Option ${winningChoice}`;
 
         if (lastMessage?.role === "assistant") {
-            const optionMatch = lastMessage.content.match(new RegExp(`${winningChoice}\\.\\s*\\[([^\\]]+)\\]`));
-            if (optionMatch) {
-                chosenAction = optionMatch[1];
+            const regex = new RegExp(`${winningChoice}\\.\\s*\\[([^\\]]+)\\]`);
+            const match = lastMessage.content.match(regex);
+            if (match) {
+                chosenAction = match[1];
             }
         }
 
-        await this.generateStory(chosenAction);
+        await this.startNewRound(chosenAction);
     }
 
-    async generateStory(chosenAction: string | null) {
-        console.log(`[StoryAgent] generateStory called with: ${chosenAction}`);
+    async startNewRound(chosenAction: string | null) {
+        const s = this.currentState;
+        const newRoundNumber = s.roundNumber + 1;
 
+        console.log(`[StoryAgent] Starting round ${newRoundNumber}. Action: ${chosenAction || 'INITIAL'}`);
+
+        // Immediately transition to NARRATING with new round number
         this.setState({
-            ...this.currentState,
+            ...s,
             phase: "NARRATING",
-            currentVotes: {},
+            roundNumber: newRoundNumber,
+            currentVotes: { "1": 0, "2": 0, "3": 0 },
             votedUsers: []
         });
 
-        // Build messages for AI
-        let messages = [...this.currentState.messages];
+        // Build AI messages
+        let aiMessages = [...s.messages];
 
         if (chosenAction) {
-            // Add the chosen action as a user message (but we won't display this to users)
-            messages.push({ role: "user" as const, content: chosenAction });
+            aiMessages.push({ role: "user" as const, content: chosenAction });
         } else {
-            // Initial story prompt
-            messages.push({ role: "user" as const, content: "Begin the adventure! Describe a mysterious setting to start our story." });
+            aiMessages.push({
+                role: "user" as const,
+                content: "Begin the adventure. Describe a mysterious setting to start our story."
+            });
         }
 
         try {
             console.log("[StoryAgent] Calling AI...");
             const response: any = await this.env.AI.run("@cf/meta/llama-3.3-70b-instruct-fp8-fast", {
-                messages: messages,
+                messages: aiMessages,
             });
 
             const newStory = response.response;
-            console.log("[StoryAgent] AI response received");
+            console.log("[StoryAgent] AI responded");
 
-            // Only add the assistant response to visible history (not the internal user prompt)
-            const newMessages = [...this.currentState.messages, { role: "assistant" as const, content: newStory }];
+            // Add only assistant response to visible history
+            const updatedMessages = [...s.messages, { role: "assistant" as const, content: newStory }];
 
             // Set voting deadline
             const votingDeadline = Date.now() + VOTING_DURATION_MS;
+            await this.ctx.storage.setAlarm(votingDeadline);
 
-            // Schedule alarm for vote resolution
+            // Transition to VOTING
+            this.setState({
+                ...this.currentState,
+                messages: updatedMessages,
+                phase: "VOTING",
+                votingDeadline,
+                currentVotes: { "1": 0, "2": 0, "3": 0 },
+                votedUsers: []
+            });
+
+            console.log(`[StoryAgent] Round ${newRoundNumber} ready for voting`);
+
+        } catch (err) {
+            console.error("[StoryAgent] AI Error:", err);
+
+            // Add error message and still transition to VOTING
+            const errorMessages = [...s.messages, {
+                role: "assistant" as const,
+                content: "The narrator pauses, gathering their thoughts... What happens next?\n\n1. [Wait patiently]\n2. [Look around]\n3. [Call out into the void]"
+            }];
+
+            const votingDeadline = Date.now() + VOTING_DURATION_MS;
             await this.ctx.storage.setAlarm(votingDeadline);
 
             this.setState({
                 ...this.currentState,
-                messages: newMessages,
-                currentVotes: { "1": 0, "2": 0, "3": 0 },
-                votedUsers: [],
-                phase: "VOTING",
-                votingDeadline
-            });
-
-        } catch (err) {
-            console.error("[StoryAgent] AI Error:", err);
-            const errorMessages = [...this.currentState.messages, {
-                role: "assistant" as const,
-                content: "The narrator pauses to gather their thoughts... (Please try voting again)"
-            }];
-            this.setState({
-                ...this.currentState,
                 messages: errorMessages,
                 phase: "VOTING",
-                votingDeadline: Date.now() + VOTING_DURATION_MS
+                votingDeadline,
+                currentVotes: { "1": 0, "2": 0, "3": 0 },
+                votedUsers: []
             });
         }
     }

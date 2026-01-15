@@ -5,6 +5,7 @@ let socket;
 let reconnectInterval;
 let timerInterval;
 let hasVoted = false;
+let currentRound = 0;
 
 const chatWindow = document.getElementById("chat-window");
 const statusDot = document.getElementById("status-dot");
@@ -12,7 +13,6 @@ const statusText = document.getElementById("status-text");
 const usersCount = document.getElementById("users-count");
 const voiceBtn = document.getElementById("voice-btn");
 const controlsArea = document.getElementById("controls");
-const timerBar = document.getElementById("timer-bar");
 const timerProgress = document.getElementById("timer-progress");
 const timerText = document.getElementById("timer-text");
 const phaseLabel = document.getElementById("phase-label");
@@ -31,10 +31,6 @@ function connect() {
         statusDot.classList.add("connected");
         statusText.innerText = "Online";
         clearInterval(reconnectInterval);
-        hasVoted = false;
-
-        // Don't reset or start automatically - let the state sync from server
-        // The server will send current state on connect
     };
 
     socket.onclose = (event) => {
@@ -58,18 +54,29 @@ function connect() {
 
         if (msg.type === "cf_agent_state") {
             renderState(msg.state);
-        } else if (msg.type === "STATE_UPDATE") {
-            renderState(msg.data);
         }
     };
 }
 
 function renderState(state) {
+    if (!state) return;
+
     // Update user count
-    const users = state.connectedUsers || state.users || 1;
+    const users = state.connectedUsers || 1;
     usersCount.innerText = `${users} online`;
 
-    // Check if in LOBBY - show start button
+    // Track round changes to reset vote state
+    if (state.roundNumber && state.roundNumber !== currentRound) {
+        currentRound = state.roundNumber;
+        hasVoted = false;
+        // Reset button states
+        document.querySelectorAll(".vote-btn").forEach(btn => {
+            btn.classList.remove("selected");
+            btn.disabled = false;
+        });
+    }
+
+    // Handle LOBBY phase
     if (state.phase === "LOBBY") {
         renderLobby(users);
         return;
@@ -80,19 +87,13 @@ function renderState(state) {
     const stories = state.messages || [];
 
     stories.forEach(entry => {
-        // Hide system prompts
-        if (entry.role === "system") return;
-        // Hide internal user prompts (they're just for AI context)
-        if (entry.role === "user") return;
+        if (entry.role === "system" || entry.role === "user") return;
 
         const div = document.createElement("div");
         div.className = "message model";
 
-        // Format the content nicely
         let content = entry.content;
-        // Make options bold
         content = content.replace(/(\d\.\s*\[[^\]]+\])/g, '<strong>$1</strong>');
-        // Line breaks
         content = content.replace(/\n/g, '<br>');
 
         div.innerHTML = content;
@@ -101,15 +102,11 @@ function renderState(state) {
 
     chatWindow.scrollTop = chatWindow.scrollHeight;
 
-    // Handle voting UI
-    const isVoting = state.phase === "VOTING";
-    const isNarrating = state.phase === "NARRATING";
-
-    if (isVoting) {
+    // Handle phases
+    if (state.phase === "VOTING") {
         controlsArea.classList.remove("hidden");
-        phaseLabel.innerText = "⏱️ Voting Phase";
+        phaseLabel.innerText = "⏱️ Vote now!";
 
-        // Update timer
         if (state.votingDeadline) {
             updateTimer(state.votingDeadline);
         }
@@ -120,37 +117,28 @@ function renderState(state) {
 
         for (let i = 1; i <= 3; i++) {
             const count = votes[String(i)] || 0;
-            document.getElementById(`votes-${i}`).innerText = `${count} vote${count !== 1 ? 's' : ''}`;
+            const votesEl = document.getElementById(`votes-${i}`);
+            const barEl = document.getElementById(`bar-${i}`);
 
-            // Update vote bar
-            const percent = totalVotes > 0 ? (count / totalVotes) * 100 : 0;
-            document.getElementById(`bar-${i}`).style.width = `${percent}%`;
+            if (votesEl) votesEl.innerText = `${count} vote${count !== 1 ? 's' : ''}`;
+            if (barEl) barEl.style.width = `${totalVotes > 0 ? (count / totalVotes) * 100 : 0}%`;
         }
 
-        // Enable/disable buttons based on vote status
-        const buttons = document.querySelectorAll(".vote-btn");
-        buttons.forEach((btn, i) => {
+        // Update button states based on hasVoted
+        document.querySelectorAll(".vote-btn").forEach(btn => {
             btn.disabled = hasVoted;
-            if (hasVoted && btn.classList.contains("selected")) {
-                btn.style.opacity = "1";
-            }
         });
 
-    } else if (isNarrating) {
-        phaseLabel.innerText = "✍️ Narrator is writing...";
+    } else if (state.phase === "NARRATING") {
+        controlsArea.classList.remove("hidden");
+        phaseLabel.innerText = "✍️ Story continues...";
         timerProgress.style.width = "100%";
         timerText.innerText = "...";
-        hasVoted = false; // Reset for next round
+        clearInterval(timerInterval);
 
-        // Disable voting during narration
-        const buttons = document.querySelectorAll(".vote-btn");
-        buttons.forEach(btn => {
+        document.querySelectorAll(".vote-btn").forEach(btn => {
             btn.disabled = true;
-            btn.classList.remove("selected");
         });
-
-    } else {
-        controlsArea.classList.add("hidden");
     }
 }
 
@@ -159,9 +147,9 @@ function renderLobby(userCount) {
         <div class="lobby-screen">
             <h2>🎭 Welcome to DreamStream</h2>
             <p>A collaborative AI storytelling adventure</p>
-            <p class="user-count">${userCount} player${userCount !== 1 ? 's' : ''} connected</p>
+            <p class="user-count">${userCount} player${userCount !== 1 ? 's' : ''} ready</p>
             <button class="start-btn" onclick="startGame()">Start Adventure</button>
-            <p class="hint">Any player can start the game for everyone</p>
+            <p class="hint">Any player can start the game</p>
         </div>
     `;
     controlsArea.classList.add("hidden");
@@ -180,14 +168,15 @@ function updateTimer(deadline) {
         const now = Date.now();
         const remaining = Math.max(0, deadline - now);
         const seconds = Math.ceil(remaining / 1000);
-        const progress = (remaining / 20000) * 100; // 20 second total
+        const progress = (remaining / 20000) * 100;
 
         timerText.innerText = `${seconds}s`;
-        timerProgress.style.width = `${progress}%`;
+        timerProgress.style.width = `${Math.max(0, progress)}%`;
 
         if (remaining <= 0) {
             clearInterval(timerInterval);
             timerText.innerText = "Tallying...";
+            timerProgress.style.width = "0%";
         }
     };
 
@@ -238,13 +227,12 @@ if ('webkitSpeechRecognition' in window) {
 
     recognition.onresult = (event) => {
         const transcript = event.results[0][0].transcript.toLowerCase();
-        console.log("Heard:", transcript);
 
-        if (transcript.includes("one") || transcript.includes("1") || transcript.includes("first")) {
+        if (transcript.includes("one") || transcript.includes("first")) {
             sendVote("1");
-        } else if (transcript.includes("two") || transcript.includes("2") || transcript.includes("second")) {
+        } else if (transcript.includes("two") || transcript.includes("second")) {
             sendVote("2");
-        } else if (transcript.includes("three") || transcript.includes("3") || transcript.includes("third")) {
+        } else if (transcript.includes("three") || transcript.includes("third")) {
             sendVote("3");
         } else if (transcript.includes("start")) {
             startGame();
