@@ -33,11 +33,8 @@ function connect() {
         clearInterval(reconnectInterval);
         hasVoted = false;
 
-        // Reset state for fresh start, then start game
-        socket.send(JSON.stringify({ type: "RESET_STATE" }));
-        setTimeout(() => {
-            socket.send(JSON.stringify({ type: "START_GAME" }));
-        }, 100);
+        // Don't reset or start automatically - let the state sync from server
+        // The server will send current state on connect
     };
 
     socket.onclose = (event) => {
@@ -71,6 +68,12 @@ function renderState(state) {
     // Update user count
     const users = state.connectedUsers || state.users || 1;
     usersCount.innerText = `${users} online`;
+
+    // Check if in LOBBY - show start button
+    if (state.phase === "LOBBY") {
+        renderLobby(users);
+        return;
+    }
 
     // Render Story Log
     chatWindow.innerHTML = "";
@@ -137,13 +140,36 @@ function renderState(state) {
         phaseLabel.innerText = "✍️ Narrator is writing...";
         timerProgress.style.width = "100%";
         timerText.innerText = "...";
+        hasVoted = false; // Reset for next round
 
         // Disable voting during narration
         const buttons = document.querySelectorAll(".vote-btn");
-        buttons.forEach(btn => btn.disabled = true);
+        buttons.forEach(btn => {
+            btn.disabled = true;
+            btn.classList.remove("selected");
+        });
 
     } else {
         controlsArea.classList.add("hidden");
+    }
+}
+
+function renderLobby(userCount) {
+    chatWindow.innerHTML = `
+        <div class="lobby-screen">
+            <h2>🎭 Welcome to DreamStream</h2>
+            <p>A collaborative AI storytelling adventure</p>
+            <p class="user-count">${userCount} player${userCount !== 1 ? 's' : ''} connected</p>
+            <button class="start-btn" onclick="startGame()">Start Adventure</button>
+            <p class="hint">Any player can start the game for everyone</p>
+        </div>
+    `;
+    controlsArea.classList.add("hidden");
+}
+
+function startGame() {
+    if (socket && socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({ type: "START_GAME" }));
     }
 }
 
@@ -220,6 +246,8 @@ if ('webkitSpeechRecognition' in window) {
             sendVote("2");
         } else if (transcript.includes("three") || transcript.includes("3") || transcript.includes("third")) {
             sendVote("3");
+        } else if (transcript.includes("start")) {
+            startGame();
         }
     };
 } else {
