@@ -8,14 +8,15 @@ interface StoryState {
     connectedUsers: number;
     votingDeadline?: number;
     votedUsers: string[];
-    roundNumber: number; // Track rounds to prevent stale alarm executions
+    roundNumber: number;
+    isProcessing: boolean; // Lock to prevent concurrent processing
 }
 
 interface Env {
     AI: any;
 }
 
-const VOTING_DURATION_MS = 20000; // 20 seconds
+const VOTING_DURATION_MS = 20000;
 
 export class StoryAgent extends Agent<Env, StoryState> {
 
@@ -42,7 +43,8 @@ Never mention voting, options being chosen, players, or game mechanics. Just nar
             currentVotes: { "1": 0, "2": 0, "3": 0 },
             connectedUsers: 0,
             votedUsers: [],
-            roundNumber: 0
+            roundNumber: 0,
+            isProcessing: false
         };
     }
 
@@ -50,21 +52,40 @@ Never mention voting, options being chosen, players, or game mechanics. Just nar
         super(state, env);
     }
 
+    private log(action: string, details: Record<string, any> = {}) {
+        const s = this.currentState;
+        console.log(JSON.stringify({
+            timestamp: new Date().toISOString(),
+            action,
+            state: {
+                phase: s.phase,
+                roundNumber: s.roundNumber,
+                isProcessing: s.isProcessing,
+                connectedUsers: s.connectedUsers,
+                votedUsersCount: s.votedUsers.length,
+                messagesCount: s.messages.length
+            },
+            ...details
+        }));
+    }
+
     async onConnect(connection: any) {
-        console.log("[StoryAgent] New connection");
+        this.log("ON_CONNECT", { connectionId: connection.id });
 
         if (!this.state) {
             this.setState(this.getDefaultState());
+            this.log("INITIALIZED_DEFAULT_STATE");
         }
 
         this.setState({
             ...this.currentState,
             connectedUsers: this.currentState.connectedUsers + 1
         });
+        this.log("USER_CONNECTED");
     }
 
     async onClose(connection: any, code: number, reason: string, wasClean: boolean) {
-        console.log("[StoryAgent] Connection closed");
+        this.log("ON_CLOSE", { code, reason });
         const s = this.currentState;
         if (s.connectedUsers > 0) {
             this.setState({ ...s, connectedUsers: s.connectedUsers - 1 });
@@ -78,26 +99,40 @@ Never mention voting, options being chosen, players, or game mechanics. Just nar
         try {
             data = JSON.parse(msgStr);
         } catch (e) {
+            this.log("PARSE_ERROR", { error: String(e) });
             return;
         }
 
         const s = this.currentState;
         const connectionId = connection.id || `user-${Date.now()}`;
 
+        this.log("MESSAGE_RECEIVED", { type: data.type, connectionId });
+
         switch (data.type) {
             case "START_GAME":
-                if (s.phase === "LOBBY") {
-                    await this.startNewRound(null);
+                if (s.phase !== "LOBBY") {
+                    this.log("START_GAME_IGNORED", { reason: "not in LOBBY", currentPhase: s.phase });
+                    return;
                 }
+                if (s.isProcessing) {
+                    this.log("START_GAME_IGNORED", { reason: "already processing" });
+                    return;
+                }
+                this.log("START_GAME_ACCEPTED");
+                await this.startNewRound(null);
                 break;
 
             case "VOTE":
                 if (s.phase !== "VOTING") {
-                    console.log("[StoryAgent] Ignoring vote - not in VOTING phase");
+                    this.log("VOTE_IGNORED", { reason: "not in VOTING", currentPhase: s.phase });
+                    return;
+                }
+                if (s.isProcessing) {
+                    this.log("VOTE_IGNORED", { reason: "already processing" });
                     return;
                 }
                 if (s.votedUsers.includes(connectionId)) {
-                    console.log("[StoryAgent] User already voted");
+                    this.log("VOTE_IGNORED", { reason: "already voted", connectionId });
                     return;
                 }
 
@@ -106,19 +141,30 @@ Never mention voting, options being chosen, players, or game mechanics. Just nar
                 newVotes[choice] = (newVotes[choice] || 0) + 1;
                 const newVotedUsers = [...s.votedUsers, connectionId];
 
-                console.log(`[StoryAgent] Vote recorded: Option ${choice}, voters: ${newVotedUsers.length}/${s.connectedUsers}`);
-
                 this.setState({
                     ...s,
                     currentVotes: newVotes,
                     votedUsers: newVotedUsers
                 });
 
-                // Check if all users have voted - resolve immediately
+                this.log("VOTE_RECORDED", {
+                    choice,
+                    totalVoters: newVotedUsers.length,
+                    connectedUsers: s.connectedUsers
+                });
+
+                // Check if all users have voted
                 if (newVotedUsers.length >= s.connectedUsers && s.connectedUsers > 0) {
-                    console.log("[StoryAgent] All users voted - resolving immediately");
-                    // Cancel the alarm since we're resolving early
-                    await this.ctx.storage.deleteAlarm();
+                    this.log("ALL_USERS_VOTED_ATTEMPTING_EARLY_RESOLVE");
+
+                    // Cancel alarm first
+                    try {
+                        await this.ctx.storage.deleteAlarm();
+                        this.log("ALARM_DELETED_SUCCESSFULLY");
+                    } catch (e) {
+                        this.log("ALARM_DELETE_FAILED", { error: String(e) });
+                    }
+
                     await this.resolveAndContinue(s.roundNumber);
                 }
                 break;
@@ -127,32 +173,60 @@ Never mention voting, options being chosen, players, or game mechanics. Just nar
 
     async alarm() {
         const s = this.currentState;
-        console.log(`[StoryAgent] Alarm fired. Phase: ${s.phase}, Round: ${s.roundNumber}`);
+        this.log("ALARM_FIRED", {
+            expectedPhase: "VOTING",
+            actualPhase: s.phase,
+            roundNumber: s.roundNumber,
+            isProcessing: s.isProcessing
+        });
 
-        // Only process if still in VOTING phase
-        if (s.phase === "VOTING") {
-            await this.resolveAndContinue(s.roundNumber);
-        } else {
-            console.log("[StoryAgent] Alarm ignored - not in VOTING phase");
+        if (s.phase !== "VOTING") {
+            this.log("ALARM_IGNORED", { reason: "not in VOTING phase" });
+            return;
         }
+
+        if (s.isProcessing) {
+            this.log("ALARM_IGNORED", { reason: "already processing" });
+            return;
+        }
+
+        this.log("ALARM_ACCEPTED_RESOLVING");
+        await this.resolveAndContinue(s.roundNumber);
     }
 
     async resolveAndContinue(expectedRound: number) {
         const s = this.currentState;
 
-        // Guard: Check if this is for the current round
+        this.log("RESOLVE_ATTEMPT", {
+            expectedRound,
+            currentRound: s.roundNumber,
+            phase: s.phase,
+            isProcessing: s.isProcessing
+        });
+
+        // Guard: Check round number
         if (s.roundNumber !== expectedRound) {
-            console.log(`[StoryAgent] Stale resolution ignored. Expected round ${expectedRound}, current ${s.roundNumber}`);
+            this.log("RESOLVE_ABORTED", { reason: "round mismatch" });
             return;
         }
 
-        // Guard: Check if already transitioned
+        // Guard: Check phase
         if (s.phase !== "VOTING") {
-            console.log("[StoryAgent] Resolution ignored - already transitioned from VOTING");
+            this.log("RESOLVE_ABORTED", { reason: "not in VOTING phase" });
             return;
         }
 
-        // Find winning choice
+        // Guard: Check if already processing
+        if (s.isProcessing) {
+            this.log("RESOLVE_ABORTED", { reason: "already processing" });
+            return;
+        }
+
+        // Set processing lock IMMEDIATELY
+        this.setState({ ...s, isProcessing: true });
+        this.log("PROCESSING_LOCK_SET");
+
+        // Find winner
         let winningChoice = "1";
         let maxVotes = 0;
         for (const [choice, count] of Object.entries(s.currentVotes)) {
@@ -162,9 +236,9 @@ Never mention voting, options being chosen, players, or game mechanics. Just nar
             }
         }
 
-        console.log(`[StoryAgent] Winner: Option ${winningChoice} with ${maxVotes} votes`);
+        this.log("WINNER_DETERMINED", { winningChoice, votes: maxVotes });
 
-        // Extract actual option text from last message
+        // Extract action text
         const lastMessage = s.messages[s.messages.length - 1];
         let chosenAction = `Option ${winningChoice}`;
 
@@ -173,6 +247,7 @@ Never mention voting, options being chosen, players, or game mechanics. Just nar
             const match = lastMessage.content.match(regex);
             if (match) {
                 chosenAction = match[1];
+                this.log("ACTION_EXTRACTED", { chosenAction });
             }
         }
 
@@ -183,16 +258,23 @@ Never mention voting, options being chosen, players, or game mechanics. Just nar
         const s = this.currentState;
         const newRoundNumber = s.roundNumber + 1;
 
-        console.log(`[StoryAgent] Starting round ${newRoundNumber}. Action: ${chosenAction || 'INITIAL'}`);
+        this.log("ROUND_STARTING", {
+            newRoundNumber,
+            chosenAction: chosenAction || "INITIAL",
+            previousPhase: s.phase
+        });
 
-        // Immediately transition to NARRATING with new round number
+        // Transition to NARRATING with new round number
         this.setState({
             ...s,
             phase: "NARRATING",
             roundNumber: newRoundNumber,
             currentVotes: { "1": 0, "2": 0, "3": 0 },
-            votedUsers: []
+            votedUsers: [],
+            isProcessing: true // Keep processing lock
         });
+
+        this.log("PHASE_CHANGED_TO_NARRATING");
 
         // Build AI messages
         let aiMessages = [...s.messages];
@@ -206,38 +288,41 @@ Never mention voting, options being chosen, players, or game mechanics. Just nar
             });
         }
 
+        this.log("AI_CALL_STARTING", { messagesCount: aiMessages.length });
+
         try {
-            console.log("[StoryAgent] Calling AI...");
             const response: any = await this.env.AI.run("@cf/meta/llama-3.3-70b-instruct-fp8-fast", {
                 messages: aiMessages,
             });
 
             const newStory = response.response;
-            console.log("[StoryAgent] AI responded");
+            this.log("AI_RESPONSE_RECEIVED", { responseLength: newStory?.length });
 
             // Add only assistant response to visible history
             const updatedMessages = [...s.messages, { role: "assistant" as const, content: newStory }];
 
             // Set voting deadline
             const votingDeadline = Date.now() + VOTING_DURATION_MS;
+
+            this.log("SETTING_ALARM", { votingDeadline: new Date(votingDeadline).toISOString() });
             await this.ctx.storage.setAlarm(votingDeadline);
 
-            // Transition to VOTING
+            // Transition to VOTING and release lock
             this.setState({
                 ...this.currentState,
                 messages: updatedMessages,
                 phase: "VOTING",
                 votingDeadline,
                 currentVotes: { "1": 0, "2": 0, "3": 0 },
-                votedUsers: []
+                votedUsers: [],
+                isProcessing: false // Release lock
             });
 
-            console.log(`[StoryAgent] Round ${newRoundNumber} ready for voting`);
+            this.log("ROUND_COMPLETE_VOTING_OPEN", { roundNumber: newRoundNumber });
 
         } catch (err) {
-            console.error("[StoryAgent] AI Error:", err);
+            this.log("AI_ERROR", { error: String(err) });
 
-            // Add error message and still transition to VOTING
             const errorMessages = [...s.messages, {
                 role: "assistant" as const,
                 content: "The narrator pauses, gathering their thoughts... What happens next?\n\n1. [Wait patiently]\n2. [Look around]\n3. [Call out into the void]"
@@ -252,8 +337,11 @@ Never mention voting, options being chosen, players, or game mechanics. Just nar
                 phase: "VOTING",
                 votingDeadline,
                 currentVotes: { "1": 0, "2": 0, "3": 0 },
-                votedUsers: []
+                votedUsers: [],
+                isProcessing: false
             });
+
+            this.log("ERROR_RECOVERY_COMPLETE");
         }
     }
 }
