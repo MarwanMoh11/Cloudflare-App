@@ -1,4 +1,5 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
+import { StoryAgent } from "./story-agent";
 import { routeAgentRequest } from "agents-sdk";
 
 export default {
@@ -19,7 +20,7 @@ export default {
             // If we use routeAgentRequest, we can pass a prefix.
             // But simpler: just use routeAgentRequest directly and update client to connect to /agents/StoryAgent/global-story-room
 
-            // BUT user wants /agent. 
+            // BUT user wants /agent.
             // Let's rewrite the URL to a standard pattern that routeAgentRequest understands
             // Typical pattern: /parties/StoryAgent/global-story-room
 
@@ -38,5 +39,7 @@ export default {
         // Serve static assets (for local dev mostly, or if configured)
         return env.ASSETS.fetch(request);
     }
+}
+
 // Export the Agent class so Durable Objects can find it
 export { StoryAgent };
