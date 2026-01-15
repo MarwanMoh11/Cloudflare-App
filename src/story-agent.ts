@@ -47,18 +47,8 @@ export class StoryAgent extends Agent<Env, StoryState> {
             this.setState(this.currentState);
         }
 
-        // We can't directly mutate this.state.connectedUsers if it's a primitive update pattern,
-        // but agents-sdk standard setState merges. 
-        // Let's rely on reading currentState for logic and using setState for updates.
-
-        // For connected users count, this should probably be ephemeral or tracked via broadcast listening, 
-        // but for simplicity we will store it in state or just increment it.
-        // Note: modifying state here persists it.
-
         const newState = { ...this.currentState };
         newState.connectedUsers++;
-        this.setState(newState);
-
         this.setState(newState);
 
         connection.addEventListener("message", (event) => {
@@ -68,9 +58,6 @@ export class StoryAgent extends Agent<Env, StoryState> {
 
         connection.addEventListener("close", () => {
             const s = this.currentState;
-            if (s.connectedUsers > 0) {
-                this.setState({ ...s, connectedUsers: s.connectedUsers - 1 });
-            }
             if (s.connectedUsers > 0) {
                 this.setState({ ...s, connectedUsers: s.connectedUsers - 1 });
             }
@@ -84,8 +71,6 @@ export class StoryAgent extends Agent<Env, StoryState> {
         if (data.type === "START_GAME" && s.phase === "LOBBY") {
             const newState: StoryState = { ...s, phase: "NARRATING" };
             this.setState(newState);
-            const newState: StoryState = { ...s, phase: "NARRATING" };
-            this.setState(newState);
             await this.generateStory("Start the story.");
         } else if (data.type === "VOTE" && s.phase === "VOTING") {
             const choice = data.choice; // e.g., "1", "2", or "3"
@@ -93,7 +78,6 @@ export class StoryAgent extends Agent<Env, StoryState> {
             currentVotes[choice] = (currentVotes[choice] || 0) + 1;
 
             this.setState({ ...s, currentVotes });
-            this.broadcastState();
         }
     }
 
@@ -122,11 +106,6 @@ export class StoryAgent extends Agent<Env, StoryState> {
                 currentVotes: {},
                 phase: "VOTING"
             });
-
-            // Set a 30-second deadline for voting (simulated for simplicity, or use alarms)
-            // For this MVP, we'll just wait for votes indefinitely or let client trigger.
-            // But to show "Agent" capabilities, let's use an Alarm to force move if needed.
-            // this.currentAlarm = this.schedule(30 * 1000); 
 
         } catch (err) {
             console.error("AI Error:", err);
